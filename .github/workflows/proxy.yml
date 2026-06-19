@@ -158,7 +158,7 @@ jobs:
           echo "🎉 BPB Action Proxy is running!"
           echo ""
           echo "🔗 Protocol: ${{ github.event.inputs.protocol || 'hysteria2' }}"
-          echo "🔗 Public URL: ${{ env.TUNNEL_URL }}"
+          echo "🔗 Public URL: $TUNNEL_URL"
           echo ""
           if [ "${{ github.event.inputs.protocol }}" == "hysteria2" ] || [ -z "${{ github.event.inputs.protocol }}" ]; then
             echo "🔐 Password: ${{ steps.creds.outputs.password }}"
@@ -166,9 +166,18 @@ jobs:
             echo "🔐 UUID: ${{ steps.creds.outputs.uuid }}"
           fi
           echo ""
-          if [ -n "${{ env.COORDINATOR_URL }}" ]; then
-            echo "📋 Subscription URL: ${{ env.COORDINATOR_URL }}/sub/all"
+          if [ -n "$COORDINATOR_URL" ]; then
+            echo "📋 Subscription URL: $COORDINATOR_URL/sub/all"
             echo "   (Paste this into Hiddify!)"
+          else
+            echo "⚠️  No COORDINATOR_URL set - here is your direct connection string:"
+            echo ""
+            HOST=$(echo "$TUNNEL_URL" | sed 's|https://||')
+            if [ "${{ github.event.inputs.protocol }}" == "hysteria2" ] || [ -z "${{ github.event.inputs.protocol }}" ]; then
+              echo "hysteria2://${{ steps.creds.outputs.password }}@${HOST}:443?insecure=1&sni=${HOST}#BPB-Action-Direct"
+            elif [ "${{ github.event.inputs.protocol }}" == "vless" ]; then
+              echo "vless://${{ steps.creds.outputs.uuid }}@${HOST}:443?security=tls&encryption=none&headerType=none&type=tcp&sni=${HOST}#BPB-Action-Direct"
+            fi
           fi
           echo ""
           echo "⏱️  This runner will stay alive for 45 minutes max"
