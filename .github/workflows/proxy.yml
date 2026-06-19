@@ -31,12 +31,10 @@ jobs:
         if: github.event.inputs.protocol == 'hysteria2' || github.event.inputs.protocol == ''
         run: |
           echo "📦 Installing Hysteria2..."
-          # Fetch latest release URL from GitHub API
           HY2_URL=$(curl -sL https://api.github.com/repos/apernet/hysteria/releases/latest \
             | grep -o '"browser_download_url": *"[^"]*hysteria-linux-amd64"' \
             | grep -v avx | head -1 | sed 's/.*: *"\(.*\)"$/\1/')
           if [ -z "$HY2_URL" ]; then
-            # Fallback to known good version
             HY2_URL="https://github.com/apernet/hysteria/releases/download/app/v2.9.2/hysteria-linux-amd64"
           fi
           echo "Downloading from: $HY2_URL"
@@ -70,6 +68,8 @@ jobs:
           echo "port=$(shuf -i 20000-65000 -n 1)" >> $GITHUB_OUTPUT
 
       # --- Step 3: Create Hysteria2 config ---
+      # Hysteria2 generates self-signed certs automatically when no TLS is configured.
+      # We use a self-signed cert pair so the server can start.
       - name: Setup Hysteria2
         if: github.event.inputs.protocol == 'hysteria2'
         env:
@@ -77,11 +77,16 @@ jobs:
           PORT: ${{ steps.creds.outputs.port }}
         run: |
           echo "🚀 Setting up Hysteria2..."
-          cat > hysteria.yaml <<EOF
+          # Generate self-signed TLS cert (required by Hysteria2 server)
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
+            -nodes -keyout /tmp/hy2-key.pem -out /tmp/hy2-cert.pem \
+            -days 1 -subj "/CN=bpb-action"
+
+          cat > /tmp/hysteria.yaml <<YAML
           listen: :$PORT
           tls:
-            cert: /dev/null
-            key: /dev/null
+            cert: /tmp/hy2-cert.pem
+            key: /tmp/hy2-key.pem
           auth:
             type: password
             password: $PASSWORD
@@ -90,9 +95,15 @@ jobs:
             proxy:
               url: https://bing.com
               rewriteHost: true
-          EOF
-          nohup hysteria server --config hysteria.yaml &
-          echo "🔗 Hysteria2 started on port $PORT"
+          YAML
+          nohup hysteria server --config /tmp/hysteria.yaml > /tmp/hy2.log 2>&1 &
+          sleep 2
+          if ! grep -q "FATAL" /tmp/hy2.log 2>/dev/null; then
+            echo "🔗 Hysteria2 started on port $PORT"
+          else
+            echo "⚠️ Hysteria2 failed to start"
+            cat /tmp/hy2.log
+          fi
 
       # --- Step 4: Create VLESS config ---
       - name: Setup sing-box (VLESS)
@@ -102,7 +113,7 @@ jobs:
           PORT: ${{ steps.creds.outputs.port }}
         run: |
           echo "🚀 Setting up VLESS..."
-          cat > sing-box.json <<EOF
+          cat > /tmp/sing-box.json <<JSON
           {
             "inbounds": [
               {
@@ -114,8 +125,8 @@ jobs:
             ],
             "outbounds": [{ "type": "direct" }]
           }
-          EOF
-          nohup sing-box run -c sing-box.json &
+          JSON
+          nohup sing-box run -c /tmp/sing-box.json > /tmp/singbox.log 2>&1 &
           echo "🔗 VLESS started on port $PORT"
 
       # --- Step 5: Install cloudflared tunnel ---
@@ -125,34 +136,19 @@ jobs:
           wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared-linux-amd64.deb 2>/dev/null || true
 
-          # Start tunnel
-          nohup cloudflared tunnel --no-autoupdate --url http://localhost:${{ steps.creds.outputs.port }} > tunnel.log 2>&1 &
-          sleep 5
+          # Start tunnel pointing at the proxy port
+          nohup cloudflared tunnel --no-autoupdate --url http://localhost:${{ steps.creds.outputs.port }} > /tmp/tunnel.log 2>&1 &
+          sleep 8
 
           # Extract tunnel URL
-          TUNNEL_URL=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' tunnel.log | head -n1 || echo "")
-          echo "tunnel_url=$TUNNEL_URL" >> $GITHUB_ENV
+          TUNNEL_URL=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/tunnel.log | head -n1 || echo "")
+          echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
           echo "🌍 Tunnel URL: $TUNNEL_URL"
 
-      # --- Step 5.5: Setup DHT Mesh Node (P0) ---
-      # DISABLED: DHT node code is not yet tested. Re-enable when ready.
-      # - name: Setup DHT Mesh Node
-      #   if: env.COORDINATOR_URL != '' || env.NETWORK_ID != ''
-      #   env:
-      #     NETWORK_ID: ${{ secrets.NETWORK_ID || 'bpb-default' }}
-      #     PROXY_PROTOCOL: ${{ github.event.inputs.protocol || 'hysteria2' }}
-      #     PROXY_HOST: ${{ env.TUNNEL_URL }}
-      #     VLESS_UUID: ${{ steps.creds.outputs.uuid }}
-      #     HY2_PASSWORD: ${{ steps.creds.outputs.password }}
-      #     PROXY_PORT: 443
-      #   run: |
-      #     echo "🌐 Setting up DHT mesh node..."
-      #     cd $GITHUB_WORKSPACE/node
-      #     npm install --production 2>/dev/null
-      #     npx tsc 2>/dev/null || true
-      #     # Run in background
-      #     nohup node dist/index.js &
-      #     echo "🌀 DHT mesh node started (background)"
+          if [ -z "$TUNNEL_URL" ]; then
+            echo "⚠️ Failed to get tunnel URL. Tunnel log:"
+            tail -20 /tmp/tunnel.log
+          fi
 
       # --- Step 5.7: Calculate expiry time ---
       - name: Calculate expiry time
@@ -161,39 +157,55 @@ jobs:
           echo "EXPIRES_AT=$EXPIRES_AT" >> $GITHUB_ENV
 
       # --- Step 6: Register with coordinator ---
+      # Build JSON payload as a temp file to avoid shell quoting nightmares.
       - name: Register proxy
         if: env.COORDINATOR_URL != ''
         run: |
           echo "📡 Registering with coordinator..."
+          PROXY_ID="gha-$GITHUB_RUN_ID"
+          HOST=$(echo "$TUNNEL_URL" | sed 's|https://||')
+          CREATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
           if [ "${{ github.event.inputs.protocol }}" == "hysteria2" ]; then
-            curl -X POST "${{ env.COORDINATOR_URL }}/register" \
-              -H "Content-Type: application/json" \
-              -H "Authorization: Bearer ${{ env.AUTH_TOKEN }}" \
-              -d '{
-                "protocol": "hysteria2",
-                "id": "gha-$GITHUB_RUN_ID",
-                "host": "'$(echo $TUNNEL_URL | sed 's|https://||')'",
-                "port": 443,
-                "password": "${{ steps.creds.outputs.password }}",
-                "sni": "'$(echo $TUNNEL_URL | sed 's|https://||')'",
-                "createdAt": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
-                "expiresAt": "'${EXPIRES_AT}'"
-              }' || echo "WARNING: Failed to register - check COORDINATOR_URL"
+            cat > /tmp/register.json <<EOF
+          {
+            "protocol": "hysteria2",
+            "id": "${PROXY_ID}",
+            "host": "${HOST}",
+            "port": 443,
+            "password": "${{ steps.creds.outputs.password }}",
+            "sni": "${HOST}",
+            "createdAt": "${CREATED_AT}",
+            "expiresAt": "${EXPIRES_AT}"
+          }
+          EOF
           elif [ "${{ github.event.inputs.protocol }}" == "vless" ]; then
-            curl -X POST "${{ env.COORDINATOR_URL }}/register" \
-              -H "Content-Type: application/json" \
-              -H "Authorization: Bearer ${{ env.AUTH_TOKEN }}" \
-              -d '{
-                "protocol": "vless",
-                "id": "gha-$GITHUB_RUN_ID",
-                "host": "'$(echo $TUNNEL_URL | sed 's|https://||')'",
-                "port": 443,
-                "uuid": "${{ steps.creds.outputs.uuid }}",
-                "sni": "'$(echo $TUNNEL_URL | sed 's|https://||')'",
-                "createdAt": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
-                "expiresAt": "'${EXPIRES_AT}'"
-              }' || echo "WARNING: Failed to register"
+            cat > /tmp/register.json <<EOF
+          {
+            "protocol": "vless",
+            "id": "${PROXY_ID}",
+            "host": "${HOST}",
+            "port": 443,
+            "uuid": "${{ steps.creds.outputs.uuid }}",
+            "sni": "${HOST}",
+            "createdAt": "${CREATED_AT}",
+            "expiresAt": "${EXPIRES_AT}"
+          }
+          EOF
+          fi
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${COORDINATOR_URL}/register" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${AUTH_TOKEN}" \
+            -d @/tmp/register.json)
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          echo "📡 Registration response (HTTP $HTTP_CODE): $BODY"
+
+          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
+            echo "⚠️ Registration failed! Dumping payload for debug:"
+            cat /tmp/register.json
           fi
 
       # --- Step 7: Print subscription URL ---
@@ -234,6 +246,7 @@ jobs:
         run: |
           echo "💤 Keeping alive with heartbeat every 5 min..."
           HEARTBEAT_ID="gha-$GITHUB_RUN_ID"
+          HOST=$(echo "$TUNNEL_URL" | sed 's|https://||')
           MINUTES_LEFT=45
           for i in $(seq 1 45); do
             # Send heartbeat every 5 minutes
@@ -245,35 +258,39 @@ jobs:
                 -d "{\"id\": \"${HEARTBEAT_ID}\", \"expiresAt\": \"${EXPIRES_AT}\"}" 2>/dev/null || echo "000")
               if [ "$HTTP_CODE" = "404" ]; then
                 echo "⚠️ Proxy record lost, re-registering..."
+                # Rebuild registration JSON and re-post
+                CREATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
                 if [ "${{ github.event.inputs.protocol }}" == "hysteria2" ] || [ -z "${{ github.event.inputs.protocol }}" ]; then
-                  curl -s -X POST "${COORDINATOR_URL}/register" \
-                    -H "Content-Type: application/json" \
-                    -H "Authorization: Bearer ${AUTH_TOKEN}" \
-                    -d '{
-                      "protocol": "hysteria2",
-                      "id": "'${HEARTBEAT_ID}'",
-                      "host": "'$(echo $TUNNEL_URL | sed 's|https://||')'",
-                      "port": 443,
-                      "password": "${{ steps.creds.outputs.password }}",
-                      "sni": "'$(echo $TUNNEL_URL | sed 's|https://||')'",
-                      "createdAt": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
-                      "expiresAt": "'${EXPIRES_AT}'"
-                    }' || true
+                  cat > /tmp/reregister.json <<EOF
+              {
+                "protocol": "hysteria2",
+                "id": "${HEARTBEAT_ID}",
+                "host": "${HOST}",
+                "port": 443,
+                "password": "${{ steps.creds.outputs.password }}",
+                "sni": "${HOST}",
+                "createdAt": "${CREATED_AT}",
+                "expiresAt": "${EXPIRES_AT}"
+              }
+              EOF
                 elif [ "${{ github.event.inputs.protocol }}" == "vless" ]; then
-                  curl -s -X POST "${COORDINATOR_URL}/register" \
-                    -H "Content-Type: application/json" \
-                    -H "Authorization: Bearer ${AUTH_TOKEN}" \
-                    -d '{
-                      "protocol": "vless",
-                      "id": "'${HEARTBEAT_ID}'",
-                      "host": "'$(echo $TUNNEL_URL | sed 's|https://||')'",
-                      "port": 443,
-                      "uuid": "${{ steps.creds.outputs.uuid }}",
-                      "sni": "'$(echo $TUNNEL_URL | sed 's|https://||')'",
-                      "createdAt": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
-                      "expiresAt": "'${EXPIRES_AT}'"
-                    }' || true
+                  cat > /tmp/reregister.json <<EOF
+              {
+                "protocol": "vless",
+                "id": "${HEARTBEAT_ID}",
+                "host": "${HOST}",
+                "port": 443,
+                "uuid": "${{ steps.creds.outputs.uuid }}",
+                "sni": "${HOST}",
+                "createdAt": "${CREATED_AT}",
+                "expiresAt": "${EXPIRES_AT}"
+              }
+              EOF
                 fi
+                curl -s -X POST "${COORDINATOR_URL}/register" \
+                  -H "Content-Type: application/json" \
+                  -H "Authorization: Bearer ${AUTH_TOKEN}" \
+                  -d @/tmp/reregister.json || true
               else
                 echo "💓 Heartbeat: HTTP $HTTP_CODE"
               fi
