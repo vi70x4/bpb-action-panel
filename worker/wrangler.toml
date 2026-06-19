@@ -2,12 +2,20 @@ name = "bpb-action-coordinator"
 main = "src/index.ts"
 compatibility_date = "2024-01-01"
 
-# No KV needed - worker uses in-memory storage by default
-# If you want persistent storage, create a KV namespace:
-#   wrangler kv:namespace create "BPB_KV"
-# Then uncomment below and paste the real id:
-# [[kv_namespaces]]
-# binding = "BPB_KV"
-# id = "paste-real-id-here"
+# KV namespace for proxy configs.
+# Create with: wrangler kv:namespace create "BPB_KV"
+# Then paste the id below and the preview_id for dev.
+# If not configured, worker falls back to in-memory storage (resets on redeploy).
+[[kv_namespaces]]
+binding = "BPB_KV"
+id = "93a55a4206a54fb4aa185533fee2dd39"
+# preview_id = "paste-your-preview-id-here"
 
-# Enable secrets (set these with: wrangler secret put AUTH_TOKEN)
+# Smart Placement — CF places worker near request origin.
+# Good for our mix: runners register (infrequent, us-east-1),
+# clients subscribe (frequent, global). Smart adapts automatically.
+[placement]
+mode = "smart"
+
+# Secrets (set with: wrangler secret put AUTH_TOKEN)
+# AUTH_TOKEN = shared secret for runner registration

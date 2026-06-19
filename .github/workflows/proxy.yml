@@ -1,8 +1,6 @@
 name: BPB Action Proxy
 
 on:
-  push:
-    branches: [main, develop]
   workflow_dispatch:
     inputs:
       protocol:
@@ -67,7 +65,7 @@ jobs:
 
           wget -q --show-progress "$SINGBOX_URL" -O /tmp/sing-box.tar.gz || {
             echo "Getting from GitHub release..."
-            LATEST_URL=$(curl -s -L https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep -o '"browser_download_url": *"[^"]*linux-amd64[^"]*"' | head -1 | sed scanning "s/.*: \"\(.*\)\"$/\1/")
+            LATEST_URL=$(curl -s -L https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep -o '"browser_download_url": *"[^"]*linux-amd64[^"]*"' | head -1 | sed "s/.*: \"\(.*\)\"$/\1/")
             wget -q --show-progress "$LATEST_URL" -O /tmp/sing-box.tar.gz
           }
 
@@ -152,23 +150,30 @@ jobs:
           echo "🌍 Tunnel URL: $TUNNEL_URL"
 
       # --- Step 5.5: Setup DHT Mesh Node (P0) ---
-      - name: Setup DHT Mesh Node
-        if: env.COORDINATOR_URL != '' || env.NETWORK_ID != ''
-        env:
-          NETWORK_ID: ${{ secrets.NETWORK_ID || 'bpb-default' }}
-          PROXY_PROTOCOL: ${{ github.event.inputs.protocol || 'hysteria2' }}
-          PROXY_HOST: ${{ env.TUNNEL_URL }}
-          VLESS_UUID: ${{ steps.creds.outputs.uuid }}
-          HY2_PASSWORD: ${{ steps.creds.outputs.password }}
-          PROXY_PORT: 443
+      # DISABLED: DHT node code is not yet tested. Re-enable when ready.
+      # - name: Setup DHT Mesh Node
+      #   if: env.COORDINATOR_URL != '' || env.NETWORK_ID != ''
+      #   env:
+      #     NETWORK_ID: ${{ secrets.NETWORK_ID || 'bpb-default' }}
+      #     PROXY_PROTOCOL: ${{ github.event.inputs.protocol || 'hysteria2' }}
+      #     PROXY_HOST: ${{ env.TUNNEL_URL }}
+      #     VLESS_UUID: ${{ steps.creds.outputs.uuid }}
+      #     HY2_PASSWORD: ${{ steps.creds.outputs.password }}
+      #     PROXY_PORT: 443
+      #   run: |
+      #     echo "🌐 Setting up DHT mesh node..."
+      #     cd $GITHUB_WORKSPACE/node
+      #     npm install --production 2>/dev/null
+      #     npx tsc 2>/dev/null || true
+      #     # Run in background
+      #     nohup node dist/index.js &
+      #     echo "🌀 DHT mesh node started (background)"
+
+      # --- Step 5.7: Calculate expiry time ---
+      - name: Calculate expiry time
         run: |
-          echo "🌐 Setting up DHT mesh node..."
-          cd $GITHUB_WORKSPACE/node
-          npm install --production 2>/dev/null
-          npx tsc 2>/dev/null || true
-          # Run in background
-          nohup node dist/index.js &
-          echo "🌀 DHT mesh node started (background)"
+          EXPIRES_AT=$(date -u -d "+45 minutes" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v+45M +%Y-%m-%dT%H:%M:%SZ)
+          echo "EXPIRES_AT=$EXPIRES_AT" >> $GITHUB_ENV
 
       # --- Step 6: Register with coordinator ---
       - name: Register proxy
@@ -180,28 +185,30 @@ jobs:
             curl -X POST "${{ env.COORDINATOR_URL }}/register" \
               -H "Content-Type: application/json" \
               -H "Authorization: Bearer ${{ env.AUTH_TOKEN }}" \
-              -d "{
-                \"protocol\": \"hysteria2\",
-                \"id\": \"gha-$GITHUB_RUN_ID\",
-                \"host\": \"$(echo $TUNNEL_URL | sed 's|https://||')\",
-                \"port\": 443,
-                \"password\": \"${{ steps.creds.outputs.password }}\",
-                \"sni\": \"$(echo $TUNNEL_URL | sed 's|https://||')\",
-                \"createdAt\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
-              }" || echo "WARNING: Failed to register - check COORDINATOR_URL"
+              -d '{
+                "protocol": "hysteria2",
+                "id": "gha-$GITHUB_RUN_ID",
+                "host": "'$(echo $TUNNEL_URL | sed 's|https://||')'",
+                "port": 443,
+                "password": "${{ steps.creds.outputs.password }}",
+                "sni": "'$(echo $TUNNEL_URL | sed 's|https://||')'",
+                "createdAt": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
+                "expiresAt": "'${EXPIRES_AT}'"
+              }' || echo "WARNING: Failed to register - check COORDINATOR_URL"
           elif [ "${{ github.event.inputs.protocol }}" == "vless" ]; then
             curl -X POST "${{ env.COORDINATOR_URL }}/register" \
               -H "Content-Type: application/json" \
               -H "Authorization: Bearer ${{ env.AUTH_TOKEN }}" \
-              -d "{
-                \"protocol\": \"vless\",
-                \"id\": \"gha-$GITHUB_RUN_ID\",
-                \"host\": \"$(echo $TUNNEL_URL | sed 's|https://||')\",
-                \"port\": 443,
-                \"uuid\": \"${{ steps.creds.outputs.uuid }}\",
-                \"sni\": \"$(echo $TUNNEL_URL | sed 's|https://||')\",
-                \"createdAt\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
-              }" || echo "WARNING: Failed to register - check COORDINATOR_URL"
+              -d '{
+                "protocol": "vless",
+                "id": "gha-$GITHUB_RUN_ID",
+                "host": "'$(echo $TUNNEL_URL | sed 's|https://||')'",
+                "port": 443,
+                "uuid": "${{ steps.creds.outputs.uuid }}",
+                "sni": "'$(echo $TUNNEL_URL | sed 's|https://||')'",
+                "createdAt": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
+                "expiresAt": "'${EXPIRES_AT}'"
+              }' || echo "WARNING: Failed to register"
           fi
 
       # --- Step 7: Print subscription URL ---
@@ -237,11 +244,55 @@ jobs:
           echo "⏱️  This runner will stay alive for 45 minutes max"
           echo "═══════════════════════════════════════════════"
 
-      # --- Step 8: Keep alive ---
-      - name: Keep runner alive
+      # --- Step 8: Keep alive with heartbeat ---
+      - name: Keep runner alive with heartbeat
         run: |
-          echo "💤 Keeping alive... (Press Ctrl+C to stop)"
+          echo "💤 Keeping alive with heartbeat every 5 min..."
+          HEARTBEAT_ID="gha-$GITHUB_RUN_ID"
+          MINUTES_LEFT=45
           for i in $(seq 1 45); do
-            echo "⏱️  Active for $i minutes..."
+            # Send heartbeat every 5 minutes
+            if [ $((i % 5)) -eq 0 ] && [ -n "$COORDINATOR_URL" ]; then
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                -X POST "${COORDINATOR_URL}/heartbeat" \
+                -H "Content-Type: application/json" \
+                -H "Authorization: Bearer ${AUTH_TOKEN}" \
+                -d "{\"id\": \"${HEARTBEAT_ID}\", \"expiresAt\": \"${EXPIRES_AT}\"}" 2>/dev/null || echo "000")
+              if [ "$HTTP_CODE" = "404" ]; then
+                echo "⚠️ Proxy record lost, re-registering..."
+                if [ "${{ github.event.inputs.protocol }}" == "hysteria2" ] || [ -z "${{ github.event.inputs.protocol }}" ]; then
+                  curl -s -X POST "${COORDINATOR_URL}/register" \
+                    -H "Content-Type: application/json" \
+                    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+                    -d '{
+                      "protocol": "hysteria2",
+                      "id": "'${HEARTBEAT_ID}'",
+                      "host": "'$(echo $TUNNEL_URL | sed 's|https://||')'",
+                      "port": 443,
+                      "password": "${{ steps.creds.outputs.password }}",
+                      "sni": "'$(echo $TUNNEL_URL | sed 's|https://||')'",
+                      "createdAt": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
+                      "expiresAt": "'${EXPIRES_AT}'"
+                    }' || true
+                elif [ "${{ github.event.inputs.protocol }}" == "vless" ]; then
+                  curl -s -X POST "${COORDINATOR_URL}/register" \
+                    -H "Content-Type: application/json" \
+                    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+                    -d '{
+                      "protocol": "vless",
+                      "id": "'${HEARTBEAT_ID}'",
+                      "host": "'$(echo $TUNNEL_URL | sed 's|https://||')'",
+                      "port": 443,
+                      "uuid": "${{ steps.creds.outputs.uuid }}",
+                      "sni": "'$(echo $TUNNEL_URL | sed 's|https://||')'",
+                      "createdAt": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
+                      "expiresAt": "'${EXPIRES_AT}'"
+                    }' || true
+                fi
+              else
+                echo "💓 Heartbeat: HTTP $HTTP_CODE"
+              fi
+            fi
+            echo "⏱️  Active for $i minutes... (${MINUTES_LEFT} min remaining)"
             sleep 60
           done
