@@ -106,13 +106,15 @@ jobs:
           fi
 
       # --- Step 4: Create VLESS config ---
+      # Uses WebSocket transport so it works through Cloudflare HTTP tunnel.
+      # Path: /ws — arbitrary, just needs to match client config.
       - name: Setup sing-box (VLESS)
         if: github.event.inputs.protocol == 'vless'
         env:
           UUID: ${{ steps.creds.outputs.uuid }}
           PORT: ${{ steps.creds.outputs.port }}
         run: |
-          echo "🚀 Setting up VLESS..."
+          echo "🚀 Setting up VLESS + WebSocket..."
           cat > /tmp/sing-box.json <<JSON
           {
             "inbounds": [
@@ -120,14 +122,24 @@ jobs:
                 "type": "vless",
                 "listen": "::",
                 "listen_port": $PORT,
-                "users": [{ "uuid": "$UUID" }]
+                "users": [{ "uuid": "$UUID" }],
+                "transport": {
+                  "type": "ws",
+                  "path": "/ws"
+                }
               }
             ],
             "outbounds": [{ "type": "direct" }]
           }
           JSON
           nohup sing-box run -c /tmp/sing-box.json > /tmp/singbox.log 2>&1 &
-          echo "🔗 VLESS started on port $PORT"
+          sleep 2
+          if ! grep -q 'FATAL\|error' /tmp/singbox.log 2>/dev/null; then
+            echo "🔗 VLESS+WS started on port $PORT"
+          else
+            echo "⚠️ VLESS failed to start"
+            cat /tmp/singbox.log
+          fi
 
       # --- Step 5: Install cloudflared tunnel ---
       - name: Setup Cloudflare Tunnel
@@ -234,7 +246,7 @@ jobs:
             if [ "${{ github.event.inputs.protocol }}" == "hysteria2" ] || [ -z "${{ github.event.inputs.protocol }}" ]; then
               echo "hysteria2://${{ steps.creds.outputs.password }}@${HOST}:443?insecure=1&sni=${HOST}#BPB-Action-Direct"
             elif [ "${{ github.event.inputs.protocol }}" == "vless" ]; then
-              echo "vless://${{ steps.creds.outputs.uuid }}@${HOST}:443?security=tls&encryption=none&headerType=none&type=tcp&sni=${HOST}#BPB-Action-Direct"
+              echo "vless://${{ steps.creds.outputs.uuid }}@${HOST}:443?security=tls&encryption=none&headerType=none&type=ws&path=%2Fws&sni=${HOST}#BPB-Action-Direct"
             fi
           fi
           echo ""

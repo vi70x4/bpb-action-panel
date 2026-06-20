@@ -99,10 +99,11 @@ interface ProxyConfig {
 
 function generateVlessURL(config: ProxyConfig): string {
   const params = new URLSearchParams({
-    security: config.tls ? "tls" : "none",
+    security: "tls",
     encryption: "none",
     headerType: "none",
-    type: "tcp",
+    type: "ws",
+    path: "/ws",
   });
   if (config.sni) params.set("sni", config.sni);
   return `vless://${config.uuid}@${config.host}:${config.port}?${params.toString()}#BPB-Action-${config.id}`;
