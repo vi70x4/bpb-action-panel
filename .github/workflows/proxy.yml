@@ -122,38 +122,10 @@ jobs:
         run: |
           if [ "${{ github.event.inputs.tunnel }}" == "trycloudflare" ]; then
             echo "🚀 Setting up VLESS + WebSocket (for Cloudflare)..."
-            cat > /tmp/sing-box.json <<JSON
-            {
-              "inbounds": [
-                {
-                  "type": "vless",
-                  "listen": "::",
-                  "listen_port": $PORT,
-                  "users": [{ "uuid": "$UUID" }],
-                  "transport": {
-                    "type": "ws",
-                    "path": "/ws"
-                  }
-                }
-              ],
-              "outbounds": [{ "type": "direct" }]
-            }
-            JSON
+            printf '{\n  "inbounds": [\n    {\n      "type": "vless",\n      "listen": "::",\n      "listen_port": %s,\n      "users": [{ "uuid": "%s" }],\n      "transport": {\n        "type": "ws",\n        "path": "/ws"\n      }\n    }\n  ],\n  "outbounds": [{ "type": "direct" }]\n}\n' "$PORT" "$UUID" > /tmp/sing-box.json
           else
             echo "🚀 Setting up VLESS over raw TCP (for Bore)..."
-            cat > /tmp/sing-box.json <<JSON
-            {
-              "inbounds": [
-                {
-                  "type": "vless",
-                  "listen": "::",
-                  "listen_port": $PORT,
-                  "users": [{ "uuid": "$UUID" }]
-                }
-              ],
-              "outbounds": [{ "type": "direct" }]
-            }
-            JSON
+            printf '{\n  "inbounds": [\n    {\n      "type": "vless",\n      "listen": "::",\n      "listen_port": %s,\n      "users": [{ "uuid": "%s" }]\n    }\n  ],\n  "outbounds": [{ "type": "direct" }]\n}\n' "$PORT" "$UUID" > /tmp/sing-box.json
           fi
 
           nohup sing-box run -c /tmp/sing-box.json > /tmp/singbox.log 2>&1 &
