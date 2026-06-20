@@ -328,34 +328,11 @@ jobs:
                 fi
 
                 if [ "${{ github.event.inputs.protocol }}" == "hysteria2" ]; then
-                  cat > /tmp/reregister.json <<EOF
-              {
-                "protocol": "hysteria2",
-                "id": "${HEARTBEAT_ID}",
-                "host": "${TUNNEL_HOST}",
-                "port": ${TUNNEL_PORT},
-                "password": "${{ steps.creds.outputs.password }}",
-                "sni": "${TUNNEL_HOST}",
-                "createdAt": "${CREATED_AT}",
-                "expiresAt": "${EXPIRES_AT}"
-              }
-              EOF
+                  printf '{\n  "protocol": "hysteria2",\n  "id": "%s",\n  "host": "%s",\n  "port": %s,\n  "password": "${{ steps.creds.outputs.password }}",\n  "sni": "%s",\n  "createdAt": "%s",\n  "expiresAt": "%s"\n}\n' \
+                    "${HEARTBEAT_ID}" "${TUNNEL_HOST}" "${TUNNEL_PORT}" "${TUNNEL_HOST}" "${CREATED_AT}" "${EXPIRES_AT}" > /tmp/reregister.json
                 elif [ "${{ github.event.inputs.protocol }}" == "vless" ]; then
-                  cat > /tmp/reregister.json <<EOF
-              {
-                "protocol": "vless",
-                "id": "${HEARTBEAT_ID}",
-                "host": "${TUNNEL_HOST}",
-                "port": ${TUNNEL_PORT},
-                "uuid": "${{ steps.creds.outputs.uuid }}",
-                "sni": "${TUNNEL_HOST}",
-                "type": "${TYPE_PARAM}",
-                "path": "${PATH_PARAM}",
-                "security": "${SECURITY_PARAM}",
-                "createdAt": "${CREATED_AT}",
-                "expiresAt": "${EXPIRES_AT}"
-              }
-              EOF
+                  printf '{\n  "protocol": "vless",\n  "id": "%s",\n  "host": "%s",\n  "port": %s,\n  "uuid": "${{ steps.creds.outputs.uuid }}",\n  "sni": "%s",\n  "type": "%s",\n  "path": "%s",\n  "security": "%s",\n  "createdAt": "%s",\n  "expiresAt": "%s"\n}\n' \
+                    "${HEARTBEAT_ID}" "${TUNNEL_HOST}" "${TUNNEL_PORT}" "${TUNNEL_HOST}" "${TYPE_PARAM}" "${PATH_PARAM}" "${SECURITY_PARAM}" "${CREATED_AT}" "${EXPIRES_AT}" > /tmp/reregister.json
                 fi
                 curl -s -X POST "${COORDINATOR_URL}/register" \
                   -H "Content-Type: application/json" \
