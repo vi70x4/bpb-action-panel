@@ -76,13 +76,9 @@ const INVARIANTS: InvariantCheck[] = [
     rule: "dht-peer-count-consistency",
     severity: "HARD",
     check: (latest, config) => {
-      const bootstrap = latest.get("dht.peer_count");
-      const sim = latest.get("dht.peer_count");
-
-      // If two different tools wrote to the same key, check for disagreement
-      // via the per-tool-qualified keys
-      const bEvt = latest.get("dht.peer_count.bootstrap");
-      const sEvt = latest.get("dht.peer_count.sim");
+      // Use per-tool-qualified keys for cross-tool comparison
+      const bEvt = latest.get("dht.peer.count.bootstrap");
+      const sEvt = latest.get("dht.peer.count.sim");
 
       if (bEvt && sEvt) {
         const bVal = bEvt.value as number;
@@ -101,7 +97,7 @@ const INVARIANTS: InvariantCheck[] = [
               severity: "HARD",
               rule: "dht-peer-count-consistency",
               message: `Bootstrap reports 0 peers but sim reports ${sVal}`,
-              keys: ["dht.peer_count"],
+              keys: ["dht.peer.count"],
               tools: [bEvt.tool, sEvt.tool],
               events: [bEvt, sEvt],
               delta: { bootstrap: 0, sim: sVal },
@@ -112,7 +108,7 @@ const INVARIANTS: InvariantCheck[] = [
             severity: "SOFT",
             rule: "dht-peer-count-consistency",
             message: `Bootstrap 0 peers vs sim ${sVal} peers (possibly different time windows, skew=${Math.round(skew / 1000)}s)`,
-            keys: ["dht.peer_count"],
+            keys: ["dht.peer.count"],
             tools: [bEvt.tool, sEvt.tool],
             events: [bEvt, sEvt],
             delta: { bootstrap: 0, sim: sVal, time_skew_ms: skew },
@@ -164,14 +160,14 @@ const INVARIANTS: InvariantCheck[] = [
     rule: "keyspace-orphan-consistency",
     severity: "DRIFT",
     check: (latest, _config) => {
-      const orphans = latest.get("keyspace.orphan_keys");
-      const peerCount = latest.get("dht.peer_count");
+      const orphans = latest.get("keyspace.orphan.keys");
+      const peerCount = latest.get("dht.peer.count");
 
       if (orphans && typeof orphans.value === "number" && orphans.value > 0) {
         // Having orphans isn't necessarily a contradiction, but if bootstrap
         // says "clean state" and we have orphans, that's drift
         const cleanState = [...latest.values()].find(
-          (e) => e.key === "dht.state_clean" && e.value === true,
+          (e) => e.key === "dht.state.clean" && e.value === true,
         );
 
         if (cleanState) {
@@ -179,7 +175,7 @@ const INVARIANTS: InvariantCheck[] = [
             severity: "DRIFT",
             rule: "keyspace-orphan-consistency",
             message: `Bootstrap claims clean DHT state but ${orphans.value} orphan keys found`,
-            keys: ["keyspace.orphan_keys", "dht.state_clean"],
+            keys: ["keyspace.orphan.keys", "dht.state.clean"],
             tools: [orphans.tool, cleanState.tool],
             events: [orphans, cleanState],
           };
@@ -224,7 +220,7 @@ const INVARIANTS: InvariantCheck[] = [
     severity: "SOFT",
     check: (latest, config) => {
       const ghostCount = latest.get("ghost.count");
-      const peerCount = latest.get("dht.peer_count");
+      const peerCount = latest.get("dht.peer.count");
 
       if (
         ghostCount &&
@@ -239,7 +235,7 @@ const INVARIANTS: InvariantCheck[] = [
             severity: "SOFT",
             rule: "ghost-density",
             message: `Ghost ratio ${(ghostRatio * 100).toFixed(0)}% exceeds ${(config.ghost_ratio_threshold * 100).toFixed(0)}% threshold`,
-            keys: ["ghost.count", "dht.peer_count"],
+            keys: ["ghost.count", "dht.peer.count"],
             tools: [ghostCount.tool, peerCount.tool],
             events: [ghostCount, peerCount],
             delta: { ghost_ratio: ghostRatio },

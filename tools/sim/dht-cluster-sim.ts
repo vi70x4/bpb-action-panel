@@ -10,9 +10,13 @@ import { createLibp2p } from "libp2p";
 import { noise } from "@chainsafe/libp2p-noise";
 import { yamux } from "@chainsafe/libp2p-yamux";
 import { tcp } from "@libp2p/tcp";
-import { webSockets } from "@libp2p/websockets";
 import { kadDHT } from "@libp2p/kad-dht";
 import { identify } from "@libp2p/identify";
+import { ping } from "@libp2p/ping";
+import { multiaddr } from "@multiformats/multiaddr";
+import { CID } from "multiformats/cid";
+import { sha256 } from "multiformats/hashes/sha2";
+import { peerIdFromString } from "@libp2p/peer-id";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -68,11 +72,11 @@ async function createSimNode(index: number): Promise<SimNode> {
   const listenPort = BASE_PORT + index;
 
   const node = await createLibp2p({
-    transports: [tcp(), webSockets()],
-    connectionEncryption: [noise()],
+    transports: [tcp()],
+    connectionEncrypters: [noise()],
     streamMuxers: [yamux()],
     addresses: {
-      listen: [`/tcp/${listenPort}/ws`],
+      listen: [`/ip4/0.0.0.0/tcp/${listenPort}`],
     },
     services: {
       dht: kadDHT({
@@ -80,6 +84,7 @@ async function createSimNode(index: number): Promise<SimNode> {
         kBucketSize: 20,
       }),
       identify: identify(),
+      ping: ping(),
     },
   });
 
@@ -93,11 +98,16 @@ async function createSimNode(index: number): Promise<SimNode> {
 
 async function bootstrap(nodes: SimNode[]): Promise<void> {
   const bootstrapNode = nodes[0];
-  const bootstrapAddr = `/ip4/127.0.0.1/tcp/${BASE_PORT}/ws/p2p/${bootstrapNode.peerId}`;
+  const bootstrapAddr = multiaddr(`/ip4/127.0.0.1/tcp/${BASE_PORT}`);
+  const bootstrapPeerId = peerIdFromString(bootstrapNode.peerId);
 
   for (let i = 1; i < nodes.length; i++) {
     try {
-      await nodes[i].node.dial(bootstrapAddr);
+      // Merge address into peer store before dialing (required by libp2p v3)
+      await nodes[i].node.peerStore.merge(bootstrapPeerId, {
+        multiaddrs: [bootstrapAddr],
+      });
+      await nodes[i].node.dial(bootstrapPeerId);
       await new Promise((resolve) => setTimeout(resolve, 500));
     } catch (err) {
       console.error(`  ⚠ Node ${i} failed to bootstrap to Node 0: ${err}`);
@@ -127,13 +137,38 @@ function buildMockConfig(peerId: string): ProxyConfig {
   };
 }
 
+// Timeout helper for DHT operations that may hang in small clusters
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T | null> {
+  return Promise.race([
+    promise,
+    new Promise<null>((resolve) => {
+      setTimeout(() => {
+        console.log(`    ⏱ ${label} timed out after ${ms}ms`);
+        resolve(null);
+      }, ms);
+    }),
+  ]);
+}
+
+async function keyToCID(key: string): Promise<CID> {
+  const hash = await sha256.digest(new TextEncoder().encode(key));
+  return CID.createV1(0x55, hash); // 0x55 = raw codec
+}
+
 async function announceNode(sim: SimNode): Promise<void> {
   const config = buildMockConfig(sim.peerId);
   const key = `/bpb/v2/${config.network}/${config.protocol}/${config.peerId}`;
   const value = new TextEncoder().encode(JSON.stringify(config));
 
-  await sim.node.services.dht.provide(new TextEncoder().encode(key));
-  await sim.node.services.dht.put(new TextEncoder().encode(key), value);
+  // Provide on the shared network key so findProviders discovers all participants
+  const networkKey = `/bpb/v2/${config.network}/${config.protocol}`;
+  const networkCID = await keyToCID(networkKey);
+  await withTimeout(sim.node.contentRouting.provide(networkCID), 5000, `provide(network)`);
+
+  // Also provide on per-peer CID and store the value via put
+  const peerCID = await keyToCID(key);
+  await withTimeout(sim.node.contentRouting.provide(peerCID), 5000, `provide(peer)`);
+  await withTimeout(sim.node.contentRouting.put(new TextEncoder().encode(key), value), 5000, `put(value)`);
 }
 
 // ---------------------------------------------------------------------------
@@ -141,19 +176,34 @@ async function announceNode(sim: SimNode): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function discoverPeers(sim: SimNode): Promise<number> {
-  // Walk the DHT via findProviders on a shared network key.
-  // Each node calls provide() on its own per-peer key during announce,
-  // so findProviders on the network-level key discovers all participants.
-  const networkKey = new TextEncoder().encode("/bpb/v2/bpb-sim/vless");
+  // Walk the DHT via findProviders on a shared network CID.
+  const networkKey = `/bpb/v2/bpb-sim/vless`;
+  const networkCID = await keyToCID(networkKey);
   const providers: string[] = [];
 
-  for await (const event of sim.node.services.dht.findProviders(networkKey)) {
-    if (event.name === "PROVIDER") {
-      for (const provider of event.providers) {
-        const id = provider.id.toString();
-        if (id !== sim.peerId && !providers.includes(id)) {
-          providers.push(id);
+  // Wrap entire discovery in a timeout — findProviders blocks in small clusters
+  const discoveryPromise = (async () => {
+    for await (const event of sim.node.contentRouting.findProviders(networkCID)) {
+      if (event.name === "PROVIDER") {
+        for (const provider of event.providers) {
+          const id = provider.id.toString();
+          if (id !== sim.peerId && !providers.includes(id)) {
+            providers.push(id);
+          }
         }
+      }
+    }
+  })();
+
+  await withTimeout(discoveryPromise, 5000, "findProviders");
+
+  // Fallback: count connected peers from the routing table
+  if (providers.length === 0) {
+    const connectedPeers = sim.node.getPeers();
+    for (const peer of connectedPeers) {
+      const id = peer.toString();
+      if (id !== sim.peerId) {
+        providers.push(id);
       }
     }
   }

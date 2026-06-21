@@ -385,9 +385,20 @@ async function main(): Promise<void> {
       tools: [...new Set(events.map((e) => e.tool))],
       contradiction_report: report,
       projections: {
-        dht: getDHTState(events),
+        dht: {
+          peer_count: getDHTState(events).peer_count,
+          active_nodes: getDHTState(events).active_nodes,
+          orphan_keys: getDHTState(events).orphan_keys,
+          sources: Object.fromEntries(getDHTState(events).sources),
+        },
         keyspace: getKeyspaceHealth(events),
-        tunnel: getTunnelState(events),
+        tunnel: {
+          status: getTunnelState(events).status,
+          provider: getTunnelState(events).provider,
+          host: getTunnelState(events).host,
+          port: getTunnelState(events).port,
+          sources: Object.fromEntries(getTunnelState(events).sources),
+        },
       },
     };
     writeFileSync(args.reportPath, JSON.stringify(fullReport, null, 2));

@@ -1,3 +1,5 @@
+import type { Libp2p } from "libp2p";
+
 export interface ProxyConfig {
 	peerId: string;
 	protocol: "vless" | "hysteria2";
@@ -14,7 +16,7 @@ export interface ProxyConfig {
 }
 
 export async function announceProxyConfig(
-	node: any,
+	node: Libp2p,
 	config: ProxyConfig,
 ): Promise<void> {
 	const key = `/bpb/v2/${config.network}/${config.protocol}/${config.peerId}`;
@@ -26,7 +28,7 @@ export async function announceProxyConfig(
 }
 
 export async function updateAndReannounce(
-	node: any,
+	node: Libp2p,
 	existingConfig: ProxyConfig,
 	tunnelHost: string,
 	tunnelPort?: number,
@@ -50,7 +52,7 @@ export async function updateAndReannounce(
 }
 
 export async function publishTombstone(
-	node: any,
+	node: Libp2p,
 	network: string,
 	protocol: string,
 	peerId: string,

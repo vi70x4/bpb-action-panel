@@ -1,4 +1,5 @@
 import { publishTombstone } from "./announce.js";
+import type { Libp2p } from "libp2p";
 
 export interface LifecycleOptions {
 	ttlMinutes: number;
@@ -9,7 +10,7 @@ export interface LifecycleOptions {
 }
 
 export function startLifecycle(
-	node: any,
+	node: Libp2p,
 	options: LifecycleOptions,
 ): { stop: () => Promise<void> } {
 	const ttlMs = options.ttlMinutes * 60 * 1000;

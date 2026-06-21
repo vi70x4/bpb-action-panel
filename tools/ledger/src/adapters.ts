@@ -65,7 +65,7 @@ export function normalizeBootstrap(
   events.push(
     makeEvent({
       tool: "bootstrap",
-      key: "dht.peer_count.bootstrap",
+      key: "dht.peer.count.bootstrap",
       value: output.reachable,
       run_id: runId,
       confidence: output.exit_code === 0 ? 1.0 : 0.8,
@@ -77,7 +77,7 @@ export function normalizeBootstrap(
     events.push(
       makeEvent({
         tool: "bootstrap",
-        key: "dht.state_clean",
+        key: "dht.state.clean",
         value: true,
         run_id: runId,
         confidence: 1.0,
@@ -93,7 +93,7 @@ export function normalizeBootstrap(
       events.push(
         makeEvent({
           tool: "bootstrap",
-          key: "bootstrap.peer_status",
+          key: "bootstrap.peer.status",
           value: p.status,
           run_id: runId,
           confidence: p.status === "ok" ? 1.0 : 0.7,
@@ -127,7 +127,7 @@ export function normalizeSim(
   events.push(
     makeEvent({
       tool: "sim",
-      key: "dht.peer_count.sim",
+      key: "dht.peer.count.sim",
       value:
         output.peers_discovered.reduce((a, b) => a + b, 0) /
         (output.peers_discovered.length || 1),
@@ -159,7 +159,7 @@ export function normalizeSim(
     events.push(
       makeEvent({
         tool: "sim",
-        key: "dht.peer_count",
+        key: "dht.peer.count",
         value: output.node_count,
         run_id: runId,
         confidence: output.full_mesh ? 1.0 : 0.9,
@@ -247,7 +247,7 @@ export function normalizeKeyspace(
   events.push(
     makeEvent({
       tool: "keyspace",
-      key: "keyspace.vless_count",
+      key: "keyspace.vless.count",
       value: output.vless_count,
       run_id: runId,
     }),
@@ -256,7 +256,7 @@ export function normalizeKeyspace(
   events.push(
     makeEvent({
       tool: "keyspace",
-      key: "keyspace.hysteria2_count",
+      key: "keyspace.hysteria2.count",
       value: output.hy2_count,
       run_id: runId,
     }),
@@ -265,7 +265,7 @@ export function normalizeKeyspace(
   events.push(
     makeEvent({
       tool: "keyspace",
-      key: "keyspace.tombstone_count",
+      key: "keyspace.tombstone.count",
       value: output.tombstone_count,
       run_id: runId,
     }),
@@ -274,7 +274,7 @@ export function normalizeKeyspace(
   events.push(
     makeEvent({
       tool: "keyspace",
-      key: "keyspace.orphan_keys",
+      key: "keyspace.orphan.keys",
       value: output.orphan_keys,
       run_id: runId,
       type: output.orphan_keys > 0 ? "OBSERVATION" : "FACT",

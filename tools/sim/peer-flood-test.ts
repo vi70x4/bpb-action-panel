@@ -10,9 +10,9 @@ import { createLibp2p } from "libp2p";
 import { noise } from "@chainsafe/libp2p-noise";
 import { yamux } from "@chainsafe/libp2p-yamux";
 import { tcp } from "@libp2p/tcp";
-import { webSockets } from "@libp2p/websockets";
 import { kadDHT } from "@libp2p/kad-dht";
 import { identify } from "@libp2p/identify";
+import { ping } from "@libp2p/ping";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -69,11 +69,11 @@ async function createFloodNode(index: number): Promise<FloodNode> {
   const listenPort = BASE_PORT + index;
 
   const node = await createLibp2p({
-    transports: [tcp(), webSockets()],
-    connectionEncryption: [noise()],
+    transports: [tcp()],
+    connectionEncrypters: [noise()],
     streamMuxers: [yamux()],
     addresses: {
-      listen: [`/tcp/${listenPort}/ws`],
+      listen: [`/ip4/0.0.0.0/tcp/${listenPort}`],
     },
     services: {
       dht: kadDHT({
@@ -81,6 +81,7 @@ async function createFloodNode(index: number): Promise<FloodNode> {
         kBucketSize: 20,
       }),
       identify: identify(),
+      ping: ping(),
     },
   });
 
@@ -94,7 +95,7 @@ async function createFloodNode(index: number): Promise<FloodNode> {
 
 async function bootstrap(nodes: FloodNode[]): Promise<void> {
   const bootstrapNode = nodes[0];
-  const bootstrapAddr = `/ip4/127.0.0.1/tcp/${BASE_PORT}/ws/p2p/${bootstrapNode.peerId}`;
+  const bootstrapAddr = `/ip4/127.0.0.1/tcp/${BASE_PORT}/p2p/${bootstrapNode.peerId}`;
 
   await Promise.all(
     nodes.slice(1).map(async (sim) => {
@@ -138,6 +139,12 @@ async function announceAndMeasure(sim: FloodNode): Promise<void> {
   const value = new TextEncoder().encode(JSON.stringify(config));
 
   const start = performance.now();
+
+  // Provide on the shared network key so findProviders discovers all participants
+  const networkKey = `/bpb/v2/${config.network}/${config.protocol}`;
+  await sim.node.services.dht.provide(new TextEncoder().encode(networkKey));
+
+  // Also provide on per-peer key and store the value
   await sim.node.services.dht.provide(new TextEncoder().encode(key));
   await sim.node.services.dht.put(new TextEncoder().encode(key), value);
   sim.announceLatencyMs = Math.round(performance.now() - start);

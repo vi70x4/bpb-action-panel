@@ -19,13 +19,13 @@
 
 export const CANONICAL_KEYS = [
   // DHT domain
-  "dht.peer_count",
-  "dht.peer_count.bootstrap",
-  "dht.peer_count.sim",
-  "dht.active_nodes",
-  "dht.orphan_keys",
+  "dht.peer.count",
+  "dht.peer.count.bootstrap",
+  "dht.peer.count.sim",
+  "dht.active.nodes",
+  "dht.orphan.keys",
   "dht.announced",
-  "dht.state_clean",
+  "dht.state.clean",
 
   // Node domain
   "node.status",
@@ -34,10 +34,10 @@ export const CANONICAL_KEYS = [
   "ghost.count",
 
   // Keyspace domain
-  "keyspace.vless_count",
-  "keyspace.hysteria2_count",
-  "keyspace.tombstone_count",
-  "keyspace.orphan_keys",
+  "keyspace.vless.count",
+  "keyspace.hysteria2.count",
+  "keyspace.tombstone.count",
+  "keyspace.orphan.keys",
 
   // Tunnel domain
   "tunnel.status",
@@ -46,7 +46,7 @@ export const CANONICAL_KEYS = [
   "tunnel.port",
 
   // Bootstrap domain
-  "bootstrap.peer_status",
+  "bootstrap.peer.status",
 
   // Spec domain
   "spec.alignment",

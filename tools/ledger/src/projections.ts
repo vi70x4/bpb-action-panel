@@ -102,15 +102,15 @@ export function getDHTState(events: SwarmEvent[]): DHTState {
   for (const [, evt] of latest) {
     sources.set(evt.tool, evt);
 
-    if (evt.key === "dht.peer_count" && typeof evt.value === "number") {
+    if (evt.key === "dht.peer.count" && typeof evt.value === "number") {
       peerCount = evt.value;
     }
 
-    if (evt.key === "dht.active_nodes" && Array.isArray(evt.value)) {
+    if (evt.key === "dht.active.nodes" && Array.isArray(evt.value)) {
       for (const n of evt.value as string[]) knownNodes.add(n);
     }
 
-    if (evt.key === "dht.orphan_keys" && typeof evt.value === "number") {
+    if (evt.key === "dht.orphan.keys" && typeof evt.value === "number") {
       orphanKeys = evt.value;
     }
 
@@ -152,10 +152,10 @@ export function getKeyspaceHealth(events: SwarmEvent[]): KeyspaceHealth {
     return evt && typeof evt.value === "number" ? evt.value : fallback;
   };
 
-  const vless = get("keyspace.vless_count", 0);
-  const hy2 = get("keyspace.hysteria2_count", 0);
-  const tomb = get("keyspace.tombstone_count", 0);
-  const orphan = get("keyspace.orphan_keys", 0);
+  const vless = get("keyspace.vless.count", 0);
+  const hy2 = get("keyspace.hysteria2.count", 0);
+  const tomb = get("keyspace.tombstone.count", 0);
+  const orphan = get("keyspace.orphan.keys", 0);
 
   return {
     vless_count: vless,

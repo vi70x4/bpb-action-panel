@@ -18,7 +18,9 @@ import { tcp } from "@libp2p/tcp";
 import { webSockets } from "@libp2p/websockets";
 import { kadDHT } from "@libp2p/kad-dht";
 import { identify } from "@libp2p/identify";
-import { createEd25519PeerId } from "@libp2p/peer-id-factory";
+import { ping } from "@libp2p/ping";
+import { noise } from "@chainsafe/libp2p-noise";
+import { yamux } from "@chainsafe/libp2p-yamux";
 import { toString as uint8ArrayToString } from "uint8arrays";
 import { createConnection } from "net";
 import { readFileSync } from "fs";
@@ -145,13 +147,12 @@ async function scanDHT(
   doProbe: boolean,
 ): Promise<ClassifyResult[]> {
   // Create a client-mode DHT node (lighter than a full mesh node)
-  const peerId = await createEd25519PeerId();
-
   const node = await createLibp2p({
-    peerId,
     transports: [tcp(), webSockets()],
+    connectionEncrypters: [noise()],
+    streamMuxers: [yamux()],
     addresses: {
-      listen: ["/tcp/0/ws"], // ephemeral port
+      listen: ["/ip4/0.0.0.0/tcp/0"],
     },
     services: {
       dht: kadDHT({
@@ -159,6 +160,7 @@ async function scanDHT(
         kBucketSize: 20,
       }),
       identify: identify(),
+      ping: ping(),
     },
     ...(bootstrap
       ? {
