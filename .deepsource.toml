@@ -1,0 +1,18 @@
+version = 1
+
+[[analyzers]]
+name = "javascript"
+enabled = true
+
+  [analyzers.meta]
+  plugins = ["typescript"]
+  environment = "nodejs"
+  dialect = "typescript"
+
+[[analyzers]]
+name = "test-coverage"
+enabled = true
+
+  [analyzers.meta]
+  coverage_runner = "vitest"
+  coverage_path = "coverage/lcov.info"
