@@ -34,10 +34,11 @@ Key modules: the mesh works in 3 layers — the DHT node (`node/`) discovers pee
 - Secrets (`COORDINATOR_URL`, `AUTH_TOKEN`, `NETWORK_ID`) go in GitHub Actions secrets, never in source.
 - The root `tsconfig.json` uses CommonJS modules (`"module": "commonjs"`); `node/tsconfig.json` uses ES2022 modules. Don't mix them.
 - The coordinator is optional — the mesh must degrade gracefully without it. Every feature must work DHT-only as fallback.
+- Use `spawn_agent` for code changes when that tool is available. If `spawn_agent` is unavailable in the current environment, proceed directly with the normal editing tools and keep changes scoped.
 
 ## Delegation
 
-All code changes must be delegated to subagents via `spawn_agent`. Subagents are stateless — every prompt must include the repo identifier, target symbol IDs, and the jcodemunch usage mandate. See `RULES.md §0` for the full delegation SOP and subagent prompt template.
+When available, `spawn_agent` is stateless — every prompt must include the repo identifier, target symbol IDs, and the jcodemunch usage mandate. See `RULES.md §0` for the full delegation SOP and subagent prompt template.
 
 ## jcodemunch
 
@@ -45,7 +46,7 @@ This repo is indexed as `bpb-action`. Use jcodemunch for all code exploration �
 - Start with `plan_turn(repo="bpb-action", query="...")` to find relevant symbols.
 - Symbol ID format: `{file_path}::{qualified_name}#{kind}` (e.g. `worker/src/index.ts::fetch#function`).
 - Use `get_blast_radius` before editing any symbol — understand what breaks.
-- After edits land, call `register_edit(repo="bpb-action", file_paths=[...])` to keep the index fresh.
+- After delegated code returns from `spawn_agent`, verify the changes, then call `register_edit(repo="bpb-action", file_paths=[...])` to keep the index fresh.
 
 ## Further Reference
 

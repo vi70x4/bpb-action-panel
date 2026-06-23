@@ -910,3 +910,455 @@ describe("corsHeaders", () => {
 		);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// 5. KV store with real KVNamespace mock
+// ---------------------------------------------------------------------------
+
+describe("KV store (with KVNamespace)", () => {
+	let mockKV: KVNamespace;
+	let kvEnv: Env;
+
+	beforeEach(() => {
+		memoryStore.clear();
+		mockKV = {
+			put: vi.fn().mockResolvedValue(undefined),
+			get: vi.fn().mockResolvedValue(null),
+			delete: vi.fn().mockResolvedValue(undefined),
+			list: vi.fn().mockResolvedValue({ keys: [] }),
+		} as unknown as KVNamespace;
+		kvEnv = makeEnv({ BPB_KV: mockKV });
+	});
+
+	it("put delegates to KVNamespace", async () => {
+		await kvPut(kvEnv, "key", "value", 60);
+		expect(mockKV.put).toHaveBeenCalledWith("key", "value", {
+			expirationTtl: 60,
+		});
+	});
+
+	it("get delegates to KVNamespace", async () => {
+		mockKV.get = vi.fn().mockResolvedValue("kv-value");
+		const val = await kvGet(kvEnv, "key");
+		expect(mockKV.get).toHaveBeenCalledWith("key");
+		expect(val).toBe("kv-value");
+	});
+
+	it("delete delegates to KVNamespace", async () => {
+		await kvDelete(kvEnv, "key");
+		expect(mockKV.delete).toHaveBeenCalledWith("key");
+	});
+
+	it("list delegates to KVNamespace and extracts names", async () => {
+		mockKV.list = vi.fn().mockResolvedValue({
+			keys: [{ name: "proxy:a" }, { name: "proxy:b" }],
+		});
+		const keys = await kvList(kvEnv, "proxy:");
+		expect(mockKV.list).toHaveBeenCalledWith({ prefix: "proxy:" });
+		expect(keys).toEqual(["proxy:a", "proxy:b"]);
+	});
+
+	it("hasKV returns true for mocked KV", () => {
+		expect(hasKV(kvEnv)).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 6. Register edge cases
+// ---------------------------------------------------------------------------
+
+describe("POST /register edge cases", () => {
+	let env: Env;
+
+	beforeEach(() => {
+		memoryStore.clear();
+		env = makeEnv({ AUTH_TOKEN: "test-token" });
+	});
+
+	it("returns 400 when id is missing", async () => {
+		const res = await worker.fetch(
+			makeRequest("/register", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					...bearerHeader("test-token"),
+				},
+				body: JSON.stringify({
+					protocol: "vless",
+					host: "1.2.3.4",
+					port: 443,
+					createdAt: "2025-01-01T00:00:00Z",
+					expiresAt: "2025-01-02T00:00:00Z",
+				}),
+			}),
+			env,
+		);
+		expect(res.status).toBe(400);
+		const body = await jsonResponse(res);
+		expect(body.error).toContain("Missing required fields");
+	});
+
+	it("returns 400 when host is missing", async () => {
+		const res = await worker.fetch(
+			makeRequest("/register", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					...bearerHeader("test-token"),
+				},
+				body: JSON.stringify({
+					protocol: "vless",
+					id: "test",
+					port: 443,
+					createdAt: "2025-01-01T00:00:00Z",
+					expiresAt: "2025-01-02T00:00:00Z",
+				}),
+			}),
+			env,
+		);
+		expect(res.status).toBe(400);
+	});
+
+	it("returns 400 when port is missing", async () => {
+		const res = await worker.fetch(
+			makeRequest("/register", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					...bearerHeader("test-token"),
+				},
+				body: JSON.stringify({
+					protocol: "vless",
+					id: "test",
+					host: "1.2.3.4",
+					createdAt: "2025-01-01T00:00:00Z",
+					expiresAt: "2025-01-02T00:00:00Z",
+				}),
+			}),
+			env,
+		);
+		expect(res.status).toBe(400);
+	});
+
+	it("caps TTL at 7200 when remaining time is very large", async () => {
+		const farFuture = new Date(Date.now() + 24 * 3600 * 1000).toISOString(); // 24h from now
+		const res = await worker.fetch(
+			makeRequest("/register", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					...bearerHeader("test-token"),
+				},
+				body: JSON.stringify({
+					protocol: "vless",
+					id: "cap-1",
+					host: "1.2.3.4",
+					port: 443,
+					uuid: "uuid-cap",
+					createdAt: "2025-01-01T00:00:00Z",
+					expiresAt: farFuture,
+				}),
+			}),
+			env,
+		);
+		expect(res.status).toBe(200);
+		const body = await jsonResponse(res);
+		// remaining ~86400 + 300 = 86700, capped at 7200
+		expect(body.ttlSeconds).toBe(7200);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 7. Heartbeat edge cases
+// ---------------------------------------------------------------------------
+
+describe("POST /heartbeat edge cases", () => {
+	let env: Env;
+
+	beforeEach(() => {
+		memoryStore.clear();
+		env = makeEnv({ AUTH_TOKEN: "test-token" });
+	});
+
+	it("returns 200 with default TTL when expiresAt is in the past", async () => {
+		// Register first
+		const config = {
+			protocol: "vless" as const,
+			id: "hb-past",
+			host: "1.2.3.4",
+			port: 443,
+			uuid: "uuid-past",
+			createdAt: "2025-01-01T00:00:00Z",
+			expiresAt: "2025-01-02T00:00:00Z",
+		};
+		await worker.fetch(
+			makeRequest("/register", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					...bearerHeader("test-token"),
+				},
+				body: JSON.stringify(config),
+			}),
+			env,
+		);
+
+		// Heartbeat with past expiresAt
+		const pastDate = new Date(Date.now() - 60000).toISOString();
+		const res = await worker.fetch(
+			makeRequest("/heartbeat", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					...bearerHeader("test-token"),
+				},
+				body: JSON.stringify({ id: "hb-past", expiresAt: pastDate }),
+			}),
+			env,
+		);
+		expect(res.status).toBe(200);
+		const body = await jsonResponse(res);
+		// remaining <= 0 → ttlSeconds stays 3600
+		expect(body.ttlSeconds).toBe(3600);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 8. Subscription with mixed protocols
+// ---------------------------------------------------------------------------
+
+describe("GET /sub/all with mixed protocols", () => {
+	let env: Env;
+
+	beforeEach(() => {
+		memoryStore.clear();
+		env = makeEnv({ AUTH_TOKEN: "test-token" });
+	});
+
+	it("returns both vless and hysteria2 URLs", async () => {
+		const vlessConfig = {
+			protocol: "vless" as const,
+			id: "mix-v",
+			host: "1.2.3.4",
+			port: 443,
+			uuid: "uuid-mix",
+			createdAt: "2025-01-01T00:00:00Z",
+			expiresAt: "2025-01-02T00:00:00Z",
+		};
+		const hy2Config = {
+			protocol: "hysteria2" as const,
+			id: "mix-h",
+			host: "5.6.7.8",
+			port: 8443,
+			password: "hy2-mix",
+			createdAt: "2025-01-01T00:00:00Z",
+			expiresAt: "2025-01-02T00:00:00Z",
+		};
+		await worker.fetch(
+			makeRequest("/register", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					...bearerHeader("test-token"),
+				},
+				body: JSON.stringify(vlessConfig),
+			}),
+			env,
+		);
+		await worker.fetch(
+			makeRequest("/register", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					...bearerHeader("test-token"),
+				},
+				body: JSON.stringify(hy2Config),
+			}),
+			env,
+		);
+
+		const res = await worker.fetch(makeRequest("/sub/all"), env);
+		expect(res.status).toBe(200);
+		const text = await res.text();
+		expect(text).toContain("vless://");
+		expect(text).toContain("hysteria2://");
+		expect(text).toContain("BPB-Action-mix-v");
+		expect(text).toContain("BPB-Action-mix-h");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 9. API index structure
+// ---------------------------------------------------------------------------
+
+describe("API index endpoint", () => {
+	let env: Env;
+
+	beforeEach(() => {
+		memoryStore.clear();
+		env = makeEnv();
+	});
+
+	it("lists all expected endpoints", async () => {
+		const res = await worker.fetch(makeRequest("/"), env);
+		expect(res.status).toBe(200);
+		const body = await jsonResponse(res);
+		expect(body.name).toBe("BPB Action Coordinator");
+		expect(body.version).toBe("1.1.0");
+		expect(body.endpoints).toEqual({
+			"POST /register": "Register a new proxy (auth required)",
+			"POST /heartbeat": "Refresh proxy TTL (auth required)",
+			"GET /sub/all": "Get subscription for all proxies",
+			"GET /sub/{id}": "Get subscription for specific proxy",
+			"GET /proxies": "List all active proxies",
+			"DELETE /delete/{id}": "Delete a proxy (auth required)",
+			"GET /health": "Health check",
+		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 10. CORS preflight on various paths
+// ---------------------------------------------------------------------------
+
+describe("CORS preflight on various paths", () => {
+	let env: Env;
+
+	beforeEach(() => {
+		memoryStore.clear();
+		env = makeEnv();
+	});
+
+	it("returns CORS headers for OPTIONS on /register", async () => {
+		const res = await worker.fetch(
+			makeRequest("/register", { method: "OPTIONS" }),
+			env,
+		);
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+	});
+
+	it("returns CORS headers for OPTIONS on /sub/all", async () => {
+		const res = await worker.fetch(
+			makeRequest("/sub/all", { method: "OPTIONS" }),
+			env,
+		);
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+	});
+
+	it("returns CORS headers for OPTIONS on /health", async () => {
+		const res = await worker.fetch(
+			makeRequest("/health", { method: "OPTIONS" }),
+			env,
+		);
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 11. Proxies list excludes sensitive fields
+// ---------------------------------------------------------------------------
+
+describe("GET /proxies excludes sensitive fields", () => {
+	let env: Env;
+
+	beforeEach(() => {
+		memoryStore.clear();
+		env = makeEnv({ AUTH_TOKEN: "test-token" });
+	});
+
+	it("does not expose uuid or password in list", async () => {
+		const config = {
+			protocol: "vless" as const,
+			id: "priv-1",
+			host: "1.2.3.4",
+			port: 443,
+			uuid: "secret-uuid",
+			createdAt: "2025-01-01T00:00:00Z",
+			expiresAt: "2025-01-02T00:00:00Z",
+		};
+		await worker.fetch(
+			makeRequest("/register", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					...bearerHeader("test-token"),
+				},
+				body: JSON.stringify(config),
+			}),
+			env,
+		);
+
+		const res = await worker.fetch(makeRequest("/proxies"), env);
+		const body = await jsonResponse(res);
+		expect(body).toHaveLength(1);
+		expect(body[0]).not.toHaveProperty("uuid");
+		expect(body[0]).not.toHaveProperty("password");
+		expect(body[0]).toHaveProperty("id", "priv-1");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 12. Dev mode (no AUTH_TOKEN) allows register
+// ---------------------------------------------------------------------------
+
+describe("Dev mode (no AUTH_TOKEN)", () => {
+	let env: Env;
+
+	beforeEach(() => {
+		memoryStore.clear();
+		env = makeEnv(); // No AUTH_TOKEN
+	});
+
+	it("allows register without auth header", async () => {
+		const res = await worker.fetch(
+			makeRequest("/register", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					protocol: "vless",
+					id: "dev-1",
+					host: "1.2.3.4",
+					port: 443,
+					uuid: "uuid-dev",
+					createdAt: "2025-01-01T00:00:00Z",
+					expiresAt: "2025-01-02T00:00:00Z",
+				}),
+			}),
+			env,
+		);
+		expect(res.status).toBe(200);
+		const body = await jsonResponse(res);
+		expect(body.success).toBe(true);
+	});
+
+	it("allows delete without auth header", async () => {
+		// Register first
+		await worker.fetch(
+			makeRequest("/register", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					protocol: "vless",
+					id: "dev-2",
+					host: "1.2.3.4",
+					port: 443,
+					uuid: "uuid-dev2",
+					createdAt: "2025-01-01T00:00:00Z",
+					expiresAt: "2025-01-02T00:00:00Z",
+				}),
+			}),
+			env,
+		);
+
+		const res = await worker.fetch(
+			makeRequest("/delete/dev-2", { method: "DELETE" }),
+			env,
+		);
+		expect(res.status).toBe(200);
+		const body = await jsonResponse(res);
+		expect(body.success).toBe(true);
+	});
+});
