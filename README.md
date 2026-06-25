@@ -172,9 +172,9 @@ Press **Ctrl+C** to gracefully disconnect — stops Hysteria2 and n2n edge.
 Animamesh supports multiple tunnel types, from purely direct to CDN-backed:
 
 | Tunnel | Data path | NAT traversal | Latency | Setup | Clients |
-|---|---|---|---|---|---|
+|---|---|---|---|---|---|---|
 | **n2n** 🌟 | Direct P2P (UDP hole-punched) | Supernode-assisted | Low | Set 2 secrets | Linux only (requires root/TUN), `animamesh-connect.sh` |
-| **bore** | bore.pub relay | Public relay | Medium | Just works | Any OS, stock Hiddify/v2ray |
+| **pinggy** | a.pinggy.io relay (SSH) | Public relay | Medium | Just works | Any OS, stock Hiddify/v2ray |
 | **trycloudflare** | Cloudflare CDN | CF tunnel | Higher | Just works | Any OS, stock Hiddify/v2ray |
 | **direct** | Raw STUN punch | STUN server | Lowest | Fragile, often blocked | Any OS, stock Hiddify/v2ray |
 
@@ -183,7 +183,7 @@ Animamesh supports multiple tunnel types, from purely direct to CDN-backed:
 ### When to use what
 
 - **n2n** — Default for Linux. Direct P2P, L2 adjacency, encrypted overlay. Works everywhere outbound UDP is allowed. Not available on iPhone/Windows (yet) — use `trycloudflare` for those.
-- **bore** — Quick test, no secrets needed. Relay adds latency but is reliable. Works with any v2ray client.
+- **pinggy** — Quick test, no secrets needed. SSH-based TCP relay adds latency but is reliable. Works with any v2ray client.
 - **trycloudflare** — Best for non-Linux clients (iPhone, Windows, etc). CF tunnel gives you a public HTTPS endpoint for VLESS+WS. Traffic flows through Cloudflare's CDN. Works with stock Hiddify.
 - **direct** — Raw STUN-based NAT punching. Lowest latency but fragile — many networks block it. Works with any v2ray client.
 
@@ -225,7 +225,7 @@ backend/
 │
 ├── .github/
 │   └── workflows/
-│       ├── proxy.yml          # GHA runner: n2n/bore/cloudflared/direct tunnel
+│       ├── proxy.yml          # GHA runner: n2n/pinggy/cloudflared/direct tunnel
 │       └── panel.yml          # Dashboard CI/CD
 │
 ├── docs/
@@ -309,7 +309,7 @@ n2n key = join the WiFi. Hysteria2 password = use the proxy. Other peers on the 
 No. Tor is a production-grade multi-hop onion network with thousands of nodes and decades of security research. This is a weekend experiment that puts proxy nodes in GitHub Actions and connects to them via n2n. Philosophy-wise? Same neighborhood. Security-wise? Not even close.
 
 **Can I use Hiddify instead of the Linux client?**
-If you're using `trycloudflare` or `bore` tunnel mode, yes — `GET /sub/all` returns standard v2ray subscription links that work with Hiddify on any platform. For n2n mode, you need to join the n2n overlay first (the Linux client does this automatically). Stock Hiddify doesn't speak n2n — n2n requires running the `edge` daemon with root/TUN access, which only the `animamesh-connect.sh` script currently automates on Linux.
+If you're using `trycloudflare` or `pinggy` tunnel mode, yes — `GET /sub/all` returns standard v2ray subscription links that work with Hiddify on any platform. For n2n mode, you need to join the n2n overlay first (the Linux client does this automatically). Stock Hiddify doesn't speak n2n — n2n requires running the `edge` daemon with root/TUN access, which only the `animamesh-connect.sh` script currently automates on Linux.
 
 **Why Hysteria2 vs VLESS?**
 Hysteria2: QUIC-based, fast on lossy networks, no TLS cert needed, works great over n2n.

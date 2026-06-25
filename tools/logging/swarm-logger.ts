@@ -146,7 +146,7 @@ if (isMain) {
 		host: "abc.trycloudflare.com",
 		port: 443,
 	});
-	tunnel.error("FAILED", { provider: "bore", error: "connection refused" });
+	tunnel.error("FAILED", { provider: "pinggy", error: "connection refused" });
 
 	const lifecycle = SwarmLogger.lifecycle();
 	lifecycle.info("SPAWN", { peer: "12D3KooW...", ttl: 2340 });

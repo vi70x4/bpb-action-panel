@@ -323,7 +323,7 @@ Each node in the matrix gets a slightly offset TTL base to prevent synchronized 
 | DHT | `@libp2p/kad-dht` (Node.js) | Standard Kademlia, npm package, runs in GHA node |
 | Peer identity | `@libp2p/peer-id` (Ed25519) | Cryptographic identity, DHT provider record signing |
 | Transport (discovery) | `@libp2p/tcp` or `@libp2p/websockets` | DHT communication between nodes |
-| NAT traversal | Multi-provider tunnel layer (see §8.6) | Abstraction over CF/bore/localhost.run/etc with auto-fallback |
+| NAT traversal | Multi-provider tunnel layer (see §8.6) | Abstraction over CF/pinggy/localhost.run/etc with auto-fallback |
 | Proxy traffic | sing-box (VLESS) + Hysteria2 | Unchanged from v1 — proven, efficient |
 | Coordinator | Cloudflare Worker | Unchanged — now with optional DHT bridge |
 | Respawn trigger | GitHub REST API | `POST /repos/{owner}/{repo}/actions/workflows/{id}/dispatches` |
@@ -491,7 +491,7 @@ Example: bpb-mesh-v2:{network-id}:{signed-membership}
 ```
 Node boots, tries tunnels in order:
   1. trycloudflare (fast, free, rate-limited)
-  2. bore.pub (OSS alternative)
+  2. pinggy (SSH-based TCP relay)
   3. localhost.run or pinggy
   4. ngrok (if API key available)
   5. Self-hosted VPS relay (if configured)

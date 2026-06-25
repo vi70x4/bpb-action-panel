@@ -11,11 +11,21 @@ binding = "BPB_KV"
 id = "93a55a4206a54fb4aa185533fee2dd39"
 # preview_id = "paste-your-preview-id-here"
 
-# Smart Placement — CF places worker near request origin.
-# Good for our mix: runners register (infrequent, us-east-1),
-# clients subscribe (frequent, global). Smart adapts automatically.
-[placement]
-mode = "smart"
+# Smart Placement — disabled for now due to wrangler deploy hang
+# Re-enable after: https://github.com/cloudflare/workers-sdk/issues
+#[placement]
+#mode = "smart"
 
 # Secrets (set with: wrangler secret put AUTH_TOKEN)
 # AUTH_TOKEN = shared secret for runner registration
+
+# n2n P2P overlay config — ⚠️ OVERRIDE BEFORE DEPLOY ⚠️
+# The wizard (meshify-wizard.sh) generates unique community/key per deployment.
+# If deploying manually, generate unique values:
+#   openssl rand -hex 8   → community
+#   openssl rand -base64 16  → key
+# These static placeholders are for dev/testing only.
+[vars]
+N2N_COMMUNITY = "replace-me-with-generated-community"
+N2N_KEY = "replace-me-with-generated-key"
+N2N_SUPERNODE = "supernode.ntop.org:7777"

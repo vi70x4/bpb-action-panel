@@ -7,7 +7,7 @@ export type MeshIngress =
 	| "cloudflared_quick"
 	| "cloudflared_named"
 	| "ngrok"
-	| "bore"
+	| "pinggy"
 	| "direct"
 	| "n2n";
 

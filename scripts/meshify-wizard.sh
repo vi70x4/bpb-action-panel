@@ -22,6 +22,33 @@ set -euo pipefail
 # Cleanup handler — kill background jobs on Ctrl+C
 trap 'kill $(jobs -p) 2>/dev/null; echo -e "\n\n  ${YELLOW}⚠ Aborted.${NC}\n"; exit 1' INT TERM
 
+# ── Interactive mode detection ──
+# AUTO=1 env var or --auto flag or non-TTY stdin ⇒ non-interactive (agent-friendly) mode
+# --skip-coordinator-deploy skips the Cloudflare Worker deploy step
+INTERACTIVE=true
+AUTO=false
+SKIP_COORDINATOR_DEPLOY=false
+
+_clean_args=()
+for _arg in "$@"; do
+  case "$_arg" in
+    --auto) AUTO=true; INTERACTIVE=false ;;
+    --skip-coordinator-deploy) SKIP_COORDINATOR_DEPLOY=true ;;
+    *) _clean_args+=("$_arg") ;;
+  esac
+done
+set -- "${_clean_args[@]}"
+
+[ "${AUTO:-}" = "1" ] && { AUTO=true; INTERACTIVE=false; }
+[ "${COORDINATOR_SKIP_DEPLOY:-}" = "1" ] && SKIP_COORDINATOR_DEPLOY=true
+[ ! -t 0 ] && { AUTO=true; INTERACTIVE=false; }
+
+# Silent check: in AUTO mode, suppress most banner/celebration noise
+if [ "$AUTO" = "true" ]; then
+  # Force TERM=dumb to reduce escape code complexity in logs
+  TERM=dumb
+fi
+
 # ──────────────────────────────────────────────────────────────────────────────
 # ── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -473,7 +500,7 @@ cmd_wizard() {
     section "Deploying..."
 
     local protocols=("hysteria2" "vless")
-    local tunnels=("n2n" "bore" "pinggy" "trycloudflare" "direct")
+    local tunnels=("n2n" "pinggy" "trycloudflare" "direct")
 
     local protocol
     protocol=$(prompt_choice "Choose protocol:" "${protocols[@]}")
@@ -511,11 +538,336 @@ cmd_wizard() {
   echo ""
 }
 
+# ──────────────────────────────────────────────────────────────────────────────
+# ── COORDINATOR AUTO-DEPLOY ──────────────────────────────────────────────────
+
+# Attempt to deploy the Cloudflare Worker coordinator via wrangler
+# Returns 0 and prints the deploy URL on success, 1 on failure.
+# Hangs on wrangler deploy after upload on some systems (known bug),
+# so we use a timeout and parse whatever output we got.
+_wizard_deploy_coordinator() {
+  local worker_dir
+  worker_dir="$(cd "$(dirname "$0")/../worker" && pwd)"
+
+  if [ ! -f "$worker_dir/package.json" ]; then
+    echo "  ${RED}✘${NC} Worker directory not found at: $worker_dir"
+    return 1
+  fi
+
+  echo -e "  ${CYAN}⟐${NC} Deploying coordinator from ${DIM}$worker_dir${NC}"
+
+  # Install dependencies
+  if [ ! -d "$worker_dir/node_modules" ]; then
+    echo -e "  ${CYAN}⟐${NC} Installing dependencies..."
+    (cd "$worker_dir" && npm install --silent 2>/dev/null) || true
+  fi
+
+  # Check if wrangler is authenticated
+  local wrangler_auth=false
+  if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] || [ -f "$HOME/.wrangler/config/default.toml" ] || npx --no-install wrangler whoami 2>/dev/null | grep -qi 'logged in'; then
+    wrangler_auth=true
+  fi
+
+  if [ "$wrangler_auth" = "false" ]; then
+    # Try to use CLOUDFLARE_API_TOKEN env var if set
+    if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+      echo -e "  ${GREEN}✔${NC} Using CLOUDFLARE_API_TOKEN from environment"
+    else
+      echo -e "  ${YELLOW}⚠${NC} No Cloudflare API token found. Try setting CLOUDFLARE_API_TOKEN."
+      echo -e "     Or choose 'Manual' / 'GitHub Repo' below."
+      return 1
+    fi
+  fi
+
+  # Attempt deploy with timeout (wrangler may hang after upload)
+  echo -e "  ${CYAN}⟐${NC} Running wrangler deploy (may take 30-60s)..."
+  local tmp_output
+  tmp_output=$(mktemp)
+
+  # Run wrangler deploy with timeout
+  timeout 90 npx --no-install wrangler deploy --latest 2>&1 | tee "$tmp_output" || true
+  local exit_code=${PIPESTATUS[0]}
+
+  if [ $exit_code -eq 124 ]; then
+    echo -e "  ${YELLOW}⚠${NC} wrangler deploy timed out (known hang issue)."
+    echo -e "     Checking if upload succeeded anyway..."
+  fi
+
+  # Try to extract deploy URL from output
+  local deploy_url
+  deploy_url=$(grep -oP 'https://[a-z0-9-]+\.workers\.dev' "$tmp_output" 2>/dev/null | head -1)
+  rm -f "$tmp_output"
+
+  if [ -n "$deploy_url" ]; then
+    # Also extract worker name
+    local worker_name
+    worker_name=$(grep -oP 'published [a-z0-9-]+' "$tmp_output" 2>/dev/null | head -1 | sed 's/published //' || echo "coordinator")
+    echo ""
+    echo -e "  ${GREEN}✔${NC} Coordinator deployed!"
+    echo -e "     URL:  ${CYAN}${deploy_url}${NC}"
+    echo -e "     Name: ${DIM}${worker_name:-bpb-action-coordinator}${NC}"
+    echo "$deploy_url"
+    return 0
+  fi
+
+  # If we got here, deploy didn't produce a URL
+  echo -e "  ${YELLOW}⚠${NC} Could not determine deploy URL from wrangler output."
+  echo -e "     Check the Cloudflare Dashboard for your worker."
+  return 1
+}
+
+# Create a GitHub repo with the coordinator worker code + a deploy workflow.
+# This bypasses the local wrangler hang by using GitHub Actions to deploy.
+# Uses gh CLI (already a dependency) instead of raw curl + libsodium.
+# Usage: _wizard_setup_coordinator_repo <github_token> <cf_api_token>
+_wizard_setup_coordinator_repo() {
+  local gh_token="${1:-}"
+  local cf_token="${2:-}"
+  local n2n_community="${3:-}"
+  local n2n_key="${4:-}"
+
+  if [ -z "$gh_token" ]; then
+    echo -e "  ${RED}✘${NC} No GitHub token provided."
+    return 1
+  fi
+  if [ -z "$cf_token" ]; then
+    echo -e "  ${RED}✘${NC} No Cloudflare API token provided."
+    return 1
+  fi
+
+  local worker_dir
+  worker_dir="$(cd "$(dirname "$0")/../worker" && pwd)"
+  if [ ! -f "$worker_dir/package.json" ]; then
+    echo -e "  ${RED}✘${NC} Worker directory not found at: $worker_dir"
+    return 1
+  fi
+
+  # Random repo name
+  local repo_name="meshify-$(head -c 4 /dev/urandom | base32 | tr -d '=' | tr '[:upper:]' '[:lower:]')"
+
+  # Stage repo in temp dir
+  local tmp_dir
+  tmp_dir=$(mktemp -d)
+  cp -r "$worker_dir/src" "$tmp_dir/src"
+  cp "$worker_dir/package.json" "$tmp_dir/"
+  cp "$worker_dir/wrangler.toml" "$tmp_dir/"
+
+  # Inject generated n2n vars into wrangler.toml before committing
+  if [ -n "$n2n_community" ] && [ -n "$n2n_key" ]; then
+    sed -i "s|replace-me-with-generated-community|$n2n_community|g" "$tmp_dir/wrangler.toml"
+    sed -i "s|replace-me-with-generated-key|$n2n_key|g" "$tmp_dir/wrangler.toml"
+  fi
+
+  # .github/workflows/deploy.yml — uses cloudflare/wrangler-action
+  mkdir -p "$tmp_dir/.github/workflows"
+  cat > "$tmp_dir/.github/workflows/deploy.yml" << 'DEPLOYEOF'
+name: Deploy Coordinator
+on:
+  push: { branches: [main] }
+  workflow_dispatch:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm install
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CF_API_TOKEN }}
+          command: deploy --latest
+DEPLOYEOF
+
+  # README
+  cat > "$tmp_dir/README.md" << READMEEOF
+# Meshify Coordinator
+
+Cloudflare Worker — coordinator for the Meshify P2P proxy fleet.
+Handles runner registration, heartbeat, subscription, n2n bootstrap.
+
+Push to main → auto-deploys via GitHub Actions.
+
+## Secrets
+
+Requires \`CF_API_TOKEN\` repo secret (Cloudflare API token with Workers permission).
+READMEEOF
+
+  cat > "$tmp_dir/.gitignore" << 'GIEOF'
+node_modules/
+.wrangler/
+.env
+GIEOF
+
+  # Init git
+  cd "$tmp_dir"
+  git init --quiet && git branch -M main
+  git config user.email "meshify@users.noreply.github.com"
+  git config user.name "Meshify"
+  git add -A && git commit --quiet -m "init: meshify coordinator"
+
+  # Use gh CLI with the provided token
+  export GH_TOKEN="$gh_token"
+
+  local gh_user
+  gh_user=$(gh api user --jq '.login' 2>/dev/null) || {
+    echo -e "  ${RED}✘${NC} GitHub token invalid. Could not authenticate."
+    rm -rf "$tmp_dir"
+    unset GH_TOKEN
+    return 1
+  }
+
+  # Create repo and push in one command
+  echo -e "  ${CYAN}⟐${NC} Creating repo ${BOLD}${gh_user}/${repo_name}${NC}..."
+  gh repo create "$repo_name" --public --source=. --remote=origin --push 2>&1 | sed 's/^/    /'
+  local create_exit=$?
+
+  if [ $create_exit -ne 0 ]; then
+    echo -e "  ${RED}✘${NC} Failed to create repo."
+    rm -rf "$tmp_dir"
+    unset GH_TOKEN
+    return 1
+  fi
+
+  echo -e "  ${GREEN}✔${NC} Repo created: ${BOLD}${gh_user}/${repo_name}${NC}"
+
+  # Set CF_API_TOKEN secret
+  echo -e "  ${CYAN}⟐${NC} Setting CF_API_TOKEN secret..."
+  echo "$cf_token" | gh secret set CF_API_TOKEN --repo "${gh_user}/${repo_name}" 2>/dev/null
+  echo -e "  ${GREEN}✔${NC} Secret set."
+
+  # Trigger deploy
+  echo -e "  ${CYAN}⟐${NC} Triggering deploy workflow..."
+  gh workflow run deploy.yml --repo "${gh_user}/${repo_name}" 2>/dev/null || true
+
+  # Cleanup
+  rm -rf "$tmp_dir"
+  unset GH_TOKEN
+
+  echo ""
+  echo -e "  ${GREEN}✔${NC} Coordinator repo ready!"
+  echo -e "     Repo: ${CYAN}https://github.com/${gh_user}/${repo_name}${NC}"
+  echo -e "     Worker deploys via Actions in ~2 minutes."
+  echo -e "     URL will be: ${CYAN}https://${repo_name}.${gh_user}.workers.dev${NC}"
+
+  # Return the expected deploy URL for the caller
+  echo "DEPLOY_URL=https://${repo_name}.${gh_user}.workers.dev"
+}
+
+# Write fleet.env from the current config variables
+_write_fleet_env() {
+  mkdir -p "$ANIMAMESH_DIR"
+  cat > "$FLEET_ENV" << FLEETEOF
+# Meshify Fleet — shared configuration
+# Generated by wizard: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+# WARNING: This file contains secrets. Keep it safe.
+
+COORDINATOR_URL=${coordinator_url}
+AUTH_TOKEN=${auth_token}
+NETWORK_ID=${network_id}
+N2N_COMMUNITY=${n2n_community}
+N2N_KEY=${n2n_key}
+N2N_SUPERNODE=supernode.ntop.org:7777
+FLEETEOF
+  chmod 600 "$FLEET_ENV"
+  echo ""
+  echo -e "  ${GREEN}✔${NC} Config saved to ${FLEET_ENV}"
+}
+
 _wizard_setup_coordinator() {
   echo ""
 
+  # Generate n2n credentials upfront so they can be injected into wrangler.toml
+  # before any deploy method runs.
+  local n2n_community="animamesh-$(head -c 8 /dev/urandom | base32 | tr -d '=' | tr '[:upper:]' '[:lower:]')"
+  local n2n_key="$(head -c 18 /dev/urandom | base64 | tr -d '=' | head -c 24)"
+
   # Coordinator URL
-  while true; do
+  # In non-interactive mode with skip flag, just use placeholder
+  if [ "$INTERACTIVE" = "false" ] && [ "$SKIP_COORDINATOR_DEPLOY" = "true" ]; then
+    echo -e "  ${YELLOW}ℹ${NC} --skip-coordinator-deploy set, using placeholder URL."
+    echo -e "  ${YELLOW}ℹ${NC} Set COORDINATOR_URL manually in ${FLEET_ENV} later."
+    coordinator_url="https://your-worker.workers.dev"
+    auth_token="placeholder-$(head -c 12 /dev/urandom | base32 | tr -d '=' | tr '[:upper:]' '[:lower:]')"
+    network_id="animamesh-fleet"
+    _write_fleet_env
+    return 0
+  fi
+
+  # In interactive mode, offer deploy options
+  if [ "$INTERACTIVE" = "true" ] && [ -z "${coordinator_url:-}" ]; then
+    echo -e "  ${BOLD}How do you want to set up the coordinator?${NC}"
+    echo ""
+    echo -e "    ${GREEN}1${NC}) ${BOLD}Auto-deploy${NC}   — Deploy to Cloudflare Workers via wrangler"
+    echo -e "    ${GREEN}2${NC}) ${BOLD}GitHub Repo${NC}  — Create a repo with GH Actions deploy workflow"
+    echo -e "    ${GREEN}3${NC}) ${BOLD}Manual${NC}       — Enter an existing coordinator URL"
+    echo ""
+    echo -ne "  ${BOLD}Select [1-3] (default: 3):${NC} "
+    read -r deploy_choice
+    echo ""
+
+    case "${deploy_choice:-3}" in
+      1)
+        echo -e "  ${CYAN}⟐${NC} Attempting auto-deploy via wrangler..."
+        local deploy_result
+        deploy_result=$(_wizard_deploy_coordinator 2>&1) && {
+          coordinator_url=$(echo "$deploy_result" | grep -oP 'https://[a-z0-9-]+\.workers\.dev' | head -1)
+          if [ -n "$coordinator_url" ]; then
+            echo -e "  ${GREEN}✔${NC} Using coordinator URL: ${CYAN}${coordinator_url}${NC}"
+          else
+            echo -e "  ${YELLOW}⚠${NC} Auto-deploy result had no URL. Enter manually:"
+            deploy_choice=3
+          fi
+        } || {
+          echo -e "  ${YELLOW}⚠${NC} Auto-deploy failed. Fallback to manual entry."
+          deploy_choice=3
+        }
+        ;;
+      2)
+        echo -e "  ${CYAN}⟐${NC} Setting up coordinator via GitHub repo..."
+        echo ""
+        echo -e "  ${CYAN}?${NC} Paste a GitHub ${BOLD}token${NC} for creating the repo:"
+        echo -ne "  ${BOLD}Token:${NC} "
+        read -rs gh_repo_token
+        echo ""
+
+        echo -e "  ${CYAN}?${NC} Paste your ${BOLD}Cloudflare API Token${NC} (needs Workers permission):"
+        echo -ne "  ${BOLD}CF Token:${NC} "
+        read -rs cf_api_token_input
+        echo ""
+        echo ""
+
+        local deploy_output
+        deploy_output=$(_wizard_setup_coordinator_repo "$gh_repo_token" "$cf_api_token_input" "$n2n_community" "$n2n_key" 2>&1)
+        local exit_code=$?
+        if [ $exit_code -eq 0 ]; then
+          coordinator_url=$(echo "$deploy_output" | grep -oP 'DEPLOY_URL=\K.*' || echo "")
+          if [ -z "$coordinator_url" ]; then
+            echo -e "  ${YELLOW}⚠${NC} Could not determine URL. Enter it manually:"
+            deploy_choice=3
+          fi
+        else
+          echo -e "  ${YELLOW}⚠${NC} Repo creation failed. Fallback to manual entry."
+          deploy_choice=3
+        fi
+        ;;
+    esac
+  fi
+
+  # Non-interactive without skip flag — attempt auto-deploy, fallback to placeholder
+  if [ "$INTERACTIVE" = "false" ] && [ -z "${coordinator_url:-}" ]; then
+    echo -e "  ${CYAN}⟐${NC} Non-interactive mode, attempting auto-deploy via wrangler..."
+    local deploy_result
+    deploy_result=$(_wizard_deploy_coordinator 2>&1) || true
+    coordinator_url=$(echo "$deploy_result" | grep -oP 'https://[a-z0-9-]+\.workers\.dev' | head -1) || true
+    if [ -z "$coordinator_url" ]; then
+      echo -e "  ${YELLOW}⚠${NC} Auto-deploy failed. Using placeholder URL."
+      coordinator_url="https://your-worker.workers.dev"
+    fi
+  fi
+
+  # Manual entry (or fallback from options 1/2)
+  while [ -z "${coordinator_url:-}" ]; do
     echo -e "  ${CYAN}?${NC} What's your ${BOLD}Coordinator URL${NC}?"
     echo -e "    ${DIM}(The Cloudflare Worker endpoint like https://my-worker.workers.dev)${NC}"
     echo ""
@@ -560,35 +912,13 @@ _wizard_setup_coordinator() {
   read -r network_id
   network_id="${network_id:-animamesh-fleet}"
 
-  # n2n community (auto-generate)
-  local n2n_community
-  n2n_community="animamesh-$(head -c 8 /dev/urandom | base32 | tr -d '=' | tr '[:upper:]' '[:lower:]')"
+  # n2n credentials already generated at function entry — these are used by _write_fleet_env
   echo ""
-  echo -e "  ${GREEN}✔${NC} n2n community auto-generated: ${CYAN}${n2n_community}${NC}"
-
-  # n2n key (auto-generate)
-  local n2n_key
-  n2n_key="$(head -c 18 /dev/urandom | base64 | tr -d '=' | head -c 24)"
-  echo -e "  ${GREEN}✔${NC} n2n key auto-generated: ${CYAN}${n2n_key}${NC}"
+  echo -e "  ${GREEN}✔${NC} n2n community: ${CYAN}${n2n_community}${NC}"
+  echo -e "  ${GREEN}✔${NC} n2n key:      ${CYAN}${n2n_key}${NC}"
 
   # Write fleet.env
-  mkdir -p "$ANIMAMESH_DIR"
-  cat > "$FLEET_ENV" <<FLEETEOF
-# Meshify Fleet — shared configuration
-# Generated by wizard: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-# WARNING: This file contains secrets. Keep it safe.
-
-COORDINATOR_URL=${coordinator_url}
-AUTH_TOKEN=${auth_token}
-NETWORK_ID=${network_id}
-N2N_COMMUNITY=${n2n_community}
-N2N_KEY=${n2n_key}
-N2N_SUPERNODE=supernode.ntop.org:7777
-FLEETEOF
-  chmod 600 "$FLEET_ENV"
-
-  echo ""
-  echo -e "  ${GREEN}✔${NC} Config saved to ${FLEET_ENV}"
+  _write_fleet_env
 }
 
 _wizard_add_accounts() {
@@ -838,18 +1168,47 @@ case "${1:-wizard}" in
     render_title
     _wizard_set_secrets
     ;;
+  deploy-coordinator)
+    render_title
+    _wizard_deploy_coordinator
+    ;;
+  deploy-coordinator-repo)
+    shift
+    _dcr_gh="${1:-}"
+    _dcr_cf="${2:-}"
+    if [ -z "$_dcr_gh" ]; then
+      echo -ne "  GitHub token: "; read -rs _dcr_gh; echo ""
+    fi
+    if [ -z "$_dcr_cf" ]; then
+      echo -ne "  CF API token: "; read -rs _dcr_cf; echo ""
+    fi
+    echo ""
+    _wizard_setup_coordinator_repo "$_dcr_gh" "$_dcr_cf"
+    ;;
   help|--help|-h)
     render_title
     echo "Usage:"
-    echo "  ./$SCRIPT_NAME                  # Interactive wizard"
-    echo "  ./$SCRIPT_NAME add <token>       # Quick add account"
-    echo "  ./$SCRIPT_NAME deploy            # Deploy to fleet"
-    echo "  ./$SCRIPT_NAME status            # Fleet status"
-    echo "  ./$SCRIPT_NAME list              # List accounts"
-    echo "  ./$SCRIPT_NAME remove <name>     # Remove account"
-    echo "  ./$SCRIPT_NAME logs <name>       # View logs"
-    echo "  ./$SCRIPT_NAME confetti          # 🎉"
-    echo "  ./$SCRIPT_NAME init-secrets      # Push secrets to forks"
+    echo "  ./$SCRIPT_NAME                         # Interactive wizard"
+    echo "  ./$SCRIPT_NAME --auto                   # Auto (non-interactive) mode"
+    echo "  ./$SCRIPT_NAME --skip-coordinator-deploy # Skip CF Worker deploy"
+    echo ""
+    echo "  ./$SCRIPT_NAME add <token>              # Quick add account"
+    echo "  ./$SCRIPT_NAME deploy                   # Deploy to fleet"
+    echo "  ./$SCRIPT_NAME status                   # Fleet status"
+    echo "  ./$SCRIPT_NAME list                     # List accounts"
+    echo "  ./$SCRIPT_NAME remove <name>            # Remove account"
+    echo "  ./$SCRIPT_NAME logs <name>              # View logs"
+    echo "  ./$SCRIPT_NAME confetti                 # 🎉"
+    echo "  ./$SCRIPT_NAME init-secrets             # Push secrets to forks"
+    echo "  ./$SCRIPT_NAME deploy-coordinator       # Deploy worker via wrangler"
+    echo "  ./$SCRIPT_NAME deploy-coordinator-repo  # Deploy worker via GH repo"
+    echo ""
+    echo "Env vars:"
+    echo "  AUTO=1              Non-interactive mode"
+    echo "  COORDINATOR_SKIP_DEPLOY=1  Skip coordinator deploy"
+    echo "  CLOUDFLARE_API_TOKEN       CF API token for auto-deploy"
+    echo "  GITHUB_TOKENS              Newline-separated tokens for add"
+    echo "  LLM_URL/LLM_KEY           Custom LLM for README generation"
     ;;
   *)
     echo -e "  ${RED}✘ Unknown: ${1}${NC}"

@@ -256,8 +256,8 @@ cmd_add() {
 
   log_ok "Authenticated as ${BOLD}$gh_user${NC}"
 
-  # Add delete_repo scope if needed
-  GH_CONFIG_DIR="$account_dir/gh" gh auth refresh -h github.com -s delete_repo 2>/dev/null || true
+  # Add delete_repo scope if needed (pipe token to avoid browser prompt)
+  echo "$token" | GH_CONFIG_DIR="$account_dir/gh" gh auth refresh -h github.com -s delete_repo --with-token 2>/dev/null || true
 
   # Check if any existing forks of animamesh/backend exist — delete them
   log_info "Checking for existing forks..."
@@ -919,15 +919,23 @@ EOF
 
     log_info "[$name] Setting secrets on ${gh_user}/${fork_name}..."
 
-    # Set secrets via gh CLI
-    echo "$COORDINATOR_URL" | GH_CONFIG_DIR="$d/gh" gh secret set COORDINATOR_URL --repo "${gh_user}/${fork_name}" 2>/dev/null
-    echo "$AUTH_TOKEN" | GH_CONFIG_DIR="$d/gh" gh secret set AUTH_TOKEN --repo "${gh_user}/${fork_name}" 2>/dev/null
-    echo "$NETWORK_ID" | GH_CONFIG_DIR="$d/gh" gh secret set NETWORK_ID --repo "${gh_user}/${fork_name}" 2>/dev/null
-    echo "$N2N_COMMUNITY" | GH_CONFIG_DIR="$d/gh" gh secret set N2N_COMMUNITY --repo "${gh_user}/${fork_name}" 2>/dev/null
-    echo "$N2N_KEY" | GH_CONFIG_DIR="$d/gh" gh secret set N2N_KEY --repo "${gh_user}/${fork_name}" 2>/dev/null
-    echo "$N2N_SUPERNODE" | GH_CONFIG_DIR="$d/gh" gh secret set N2N_SUPERNODE --repo "${gh_user}/${fork_name}" 2>/dev/null
+    # Set secrets via gh CLI with explicit token from account's auth
+    local gh_token
+    gh_token=$(cat "$d/gh/hosts.yml" 2>/dev/null | grep oauth_token | awk '{print $2}' | tr -d '"' || true)
+    if [ -z "$gh_token" ]; then
+      log_warn "[$name] No gh token found, skipping secret sync"
+      continue
+    fi
 
-    log_ok "[$name] Secrets set"
+    for secret_name in COORDINATOR_URL AUTH_TOKEN NETWORK_ID N2N_COMMUNITY N2N_KEY N2N_SUPERNODE; do
+      local secret_value
+      eval "secret_value=\$$secret_name"
+      if ! echo "$secret_value" | GH_TOKEN="$gh_token" gh secret set "$secret_name" --repo "${gh_user}/${fork_name}" 2>&1; then
+        log_warn "[$name] Failed to set $secret_name (repo may not exist or token expired)"
+      fi
+    done
+
+    log_ok "[$name] Secrets synced"
   done
 }
 

@@ -41,19 +41,19 @@ describe("generateEndpoint", () => {
 		expect(ep.port).toBe(8443);
 	});
 
-	it("bore: host bore.pub, random port, url format host:port", () => {
-		const ep = generateEndpoint("bore");
-		expect(ep.host).toBe("bore.pub");
+	it("pinggy: host a.pinggy.io, random port, url format host:port", () => {
+		const ep = generateEndpoint("pinggy");
+		expect(ep.host).toBe("a.pinggy.io");
 		expect(ep.port).toBeGreaterThanOrEqual(10_000);
 		expect(ep.port).toBeLessThan(65_000);
-		expect(ep.url).toBe(`bore.pub:${ep.port}`);
+		expect(ep.url).toBe(`a.pinggy.io:${ep.port}`);
 	});
 
-	it("bore with overrides uses provided host and port", () => {
-		const ep = generateEndpoint("bore", "custom.bore.pub", 9090);
-		expect(ep.host).toBe("custom.bore.pub");
+	it("pinggy with overrides uses provided host and port", () => {
+		const ep = generateEndpoint("pinggy", "custom.pinggy.io", 9090);
+		expect(ep.host).toBe("custom.pinggy.io");
 		expect(ep.port).toBe(9090);
-		expect(ep.url).toBe("custom.bore.pub:9090");
+		expect(ep.url).toBe("custom.pinggy.io:9090");
 	});
 
 	it("direct: random IP, random port, url format host:port", () => {
@@ -136,8 +136,8 @@ describe("validateProvider", () => {
 		expect(validateProvider("trycloudflare")).toBe("trycloudflare");
 	});
 
-	it('"bore" → "bore"', () => {
-		expect(validateProvider("bore")).toBe("bore");
+	it('"pinggy" → "pinggy"', () => {
+		expect(validateProvider("pinggy")).toBe("pinggy");
 	});
 
 	it('"direct" → "direct"', () => {

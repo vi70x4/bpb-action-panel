@@ -1,13 +1,13 @@
 /**
  * Tunnel Event Mock Layer — simulates tunnel lifecycle events for testing
- * reannounce logic without real cloudflared/bore dependencies.
+ * reannounce logic without real cloudflared/pinggy dependencies.
  *
  * Usage:
  *   Programmatic:  import { TunnelEmitter } from "./tunnel-emitter.ts"
  *   CLI:           tsx tunnel-emitter.ts --provider trycloudflare --latency 3000
- *   Env-file:      tsx tunnel-emitter.ts --write-env /tmp/tunnel.env --provider bore
- *   Fail mode:     tsx tunnel-emitter.ts --provider bore --fail
- *   Reconnect:     tsx tunnel-emitter.ts --provider bore --reconnect-after 5000
+ *   Env-file:      tsx tunnel-emitter.ts --write-env /tmp/tunnel.env --provider pinggy
+ *   Fail mode:     tsx tunnel-emitter.ts --provider pinggy --fail
+ *   Reconnect:     tsx tunnel-emitter.ts --provider pinggy --reconnect-after 5000
  */
 
 import { randomBytes } from "node:crypto";
@@ -18,7 +18,7 @@ import { writeFileSync } from "node:fs";
 // Types
 // ---------------------------------------------------------------------------
 
-export type TunnelProvider = "trycloudflare" | "bore" | "direct";
+export type TunnelProvider = "trycloudflare" | "pinggy" | "direct";
 
 export interface TunnelMockConfig {
 	provider: TunnelProvider;
@@ -138,8 +138,8 @@ export function generateEndpoint(
 			const port = portOverride ?? 443;
 			return { host, port, url: `https://${host}` };
 		}
-		case "bore": {
-			const host = hostOverride ?? "bore.pub";
+		case "pinggy": {
+			const host = hostOverride ?? "a.pinggy.io";
 			const port = portOverride ?? randomPort();
 			return { host, port, url: `${host}:${port}` };
 		}
@@ -325,9 +325,10 @@ export function parseArgs(argv: string[]): Record<string, string> {
 }
 
 export function validateProvider(val: string | undefined): TunnelProvider {
-	if (val === "trycloudflare" || val === "bore" || val === "direct") return val;
+	if (val === "trycloudflare" || val === "pinggy" || val === "direct")
+		return val;
 	throw new Error(
-		`--provider must be trycloudflare | bore | direct, got: ${val ?? "(missing)"}`,
+		`--provider must be trycloudflare | pinggy | direct, got: ${val ?? "(missing)"}`,
 	);
 }
 

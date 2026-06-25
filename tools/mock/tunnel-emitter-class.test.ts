@@ -19,12 +19,6 @@ vi.mock("cloudflared", () => ({
 		close: vi.fn(),
 	})),
 }));
-vi.mock("bore", () => ({
-	startTunnel: vi.fn(() => ({
-		url: "https://mock-bore.example.com",
-		close: vi.fn(),
-	})),
-}));
 vi.mock("localtunnel", () => ({
 	startTunnel: vi.fn(() => ({
 		url: "https://mock-localtunnel.example.com",
@@ -39,7 +33,7 @@ import { TunnelEmitter } from "./tunnel-emitter.ts";
 // ---------------------------------------------------------------------------
 
 type TunnelConfig = {
-	provider: "trycloudflare" | "bore" | "localtunnel";
+	provider: "trycloudflare" | "pinggy" | "localtunnel";
 	latencyMs?: number;
 	failureRate?: number;
 	reconnectRate?: number;
@@ -80,7 +74,7 @@ describe("TunnelEmitter", () => {
 	// Constructor --------------------------------------------------------------
 	describe("constructor — initializes with inactive state", () => {
 		it("stores config from the supplied arguments", () => {
-			const config = makeConfig({ provider: "bore", port: 4000 });
+			const config = makeConfig({ provider: "pinggy", port: 4000 });
 			const emitter = new TunnelEmitter(config);
 
 			expect(emitter.config).toEqual(config);
@@ -139,12 +133,12 @@ describe("TunnelEmitter", () => {
 		});
 	});
 
-	describe("start — bore provider schedules ready event", () => {
+	describe("start — pinggy provider schedules ready event", () => {
 		it("emits TUNNEL_READY after latency elapses", () => {
 			vi.useFakeTimers();
 			const onReady = vi.fn();
 			const emitter = new TunnelEmitter(
-				makeConfig({ provider: "bore", latencyMs: 500, failureRate: 0 }),
+				makeConfig({ provider: "pinggy", latencyMs: 500, failureRate: 0 }),
 			);
 			emitter.on("TUNNEL_READY", onReady);
 
@@ -156,7 +150,7 @@ describe("TunnelEmitter", () => {
 			expect(onReady).toHaveBeenCalledTimes(1);
 			expect(onReady).toHaveBeenCalledWith(
 				expect.objectContaining({
-					url: expect.stringContaining("bore"),
+					url: expect.stringContaining("pinggy"),
 				}),
 			);
 		});
