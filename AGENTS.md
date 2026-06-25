@@ -148,32 +148,51 @@ Accounts follow the pattern `vi70x5` through `vi70x20` (16 accounts total). Each
 
 ```
 ~/.animamesh/
-├── gh/token                  # Default GitHub token (current active account)
+├── gh/token                     # Default GitHub token (current active account)
+├── fleet.env                    # Shared fleet config (COORDINATOR_URL, AUTH_TOKEN, NETWORK_ID, n2n vars)
 ├── accounts/
 │   ├── vi70x5/
-│   │   ├── token             # GitHub PAT (raw string)
-│   │   └── gh/               # Per-account gh CLI config dir
-│   │       └── hosts.yml     # gh auth state (oauth_token inside)
+│   │   ├── token                # GitHub PAT (raw string, chmod 600)
+│   │   ├── cf_token             # Cloudflare API token (raw string, chmod 600) — optional
+│   │   ├── cf_account_id        # Cloudflare account ID — optional, for Worker deployment
+│   │   ├── gh/                  # Per-account gh CLI config dir
+│   │   │   └── hosts.yml        # gh auth state (oauth_token inside)
+│   │   └── repo/                # Local clone of the minimal repo (workflow + fake source)
 │   ├── vi70x6/
 │   │   ├── token
+│   │   ├── cf_token
+│   │   ├── cf_account_id
 │   │   └── gh/hosts.yml
 │   └── ...
-└── forks/
-    ├── vi70x5.meta           # repo_name=retry-queue, gh_user=vi70x5
-    └── vi70x6.meta
+├── repos/                       # Fleet metadata (renamed from forks/)
+│   ├── vi70x5.meta              # repo_name=retry-queue, gh_user=vi70x5
+│   └── vi70x6.meta
+└── .gitignore                   # Prevents accidental commit of tokens
 ```
+
+### Credential Security
+
+| Practice | Why |
+|---|---|
+| **All token files are `chmod 600`** | Prevents other users on the machine from reading PATs and CF tokens. The fleet script sets this automatically on `add` |
+| **`~/.animamesh/` has its own `.gitignore`** | Contains `*token*`, `*secret*`, `fleet.env`, `hosts.yml` — ensures tokens are never accidentally committed even if `~/.animamesh` is inside a git repo |
+| **No tokens in source code** | `COORDINATOR_URL`, `AUTH_TOKEN`, `NETWORK_ID` → GitHub Actions secrets only. Never in source, never in `wrangler.toml` |
+| **`http.extraHeader` for git push** | The fleet script uses `git config http.extraHeader` instead of embedding tokens in remote URLs. If the script crashes, the extraHeader is cleaned up on next run. No token persists in `.git/config` |
+| **Per-account isolation** | Each account stores its own GH + CF tokens in separate subdirectories. Compromising one account's directory doesn't expose others |
+| **`fleet.env` is the shared config** | Contains `COORDINATOR_URL`, `AUTH_TOKEN`, `N2N_*` — these are fleet-wide, not per-account. Read by `deploy` and `init-secrets` commands |
 
 ### How Fleet Management Works
 
 #### Adding an Account (`animamesh-fleet.sh add <token>`)
 
-1. **Auth capture** — Stores the PAT in `~/.animamesh/accounts/<name>/token` and runs `gh auth login --with-token` into a per-account `GH_CONFIG_DIR`
-2. **Fresh repo creation** — Creates a brand new standalone repo via `gh repo create` (NOT a fork — no fork network, no visible link to animamesh)
-3. **Minimal content** — Only two files go into the repo:
+1. **Auth capture** — Stores the PAT in `~/.animamesh/accounts/<name>/token` (chmod 600) and runs `gh auth login --with-token` into a per-account `GH_CONFIG_DIR`
+2. **Cloudflare capture** — Optionally stores CF API token in `~/.animamesh/accounts/<name>/cf_token` and account ID in `cf_account_id` (both chmod 600). Used for permanent tunnel deployment and Worker deployment
+3. **Fresh repo creation** — Creates a brand new standalone repo via `gh repo create` (NOT a fork — no fork network, no visible link to animamesh)
+4. **Minimal content** — Only two files go into the repo:
    - `.github/workflows/proxy.yml` — obfuscated workflow (step names renamed to generic CI terms, all revealing comments stripped)
    - `README.md` — describes it as a CI pipeline config repo (static template or LLM-generated)
-4. **2-commit push** — Commit 1: "Initial commit" (README + .gitignore). Commit 2: "Add CI workflow" (workflow file). Looks like organic development.
-5. **Meta tracking** — Records `fork_name` and `gh_user` in `~/.animamesh/forks/<name>.meta` for self-contained re-runs
+5. **2-commit push** — Commit 1: "Initial commit" (README + .gitignore). Commit 2: "Add CI workflow" (workflow file). Looks like organic development.
+6. **Meta tracking** — Records `repo_name` and `gh_user` in `~/.animamesh/repos/<name>.meta` for self-contained re-runs
 
 #### Deploying Proxy Runners (`animamesh-fleet.sh deploy`)
 
@@ -232,7 +251,7 @@ Since throwaway GitHub accounts are used, the repos must look completely unrelat
 4. **Description** — "Automated build and test pipeline"
 5. **Topics** — `ci`, `automation`
 6. **No fork network** — Repo is created via `gh repo create`, NOT `gh repo fork`. No "forked from animamesh/backend" badge.
-7. **Minimal footprint** — Only `.github/workflows/proxy.yml` and `README.md` exist. No source code, no specs, no scripts.
+7. **Minimal footprint** — Only `.github/workflows/proxy.yml`, `README.md`, fake TypeScript source files, and build config exist. No real source code, no specs, no scripts.
 
 ### Cloudflare Account Integration (Planned)
 
@@ -240,19 +259,22 @@ Each GitHub account (`vi70x5`–`vi70x20`) can optionally have a paired Cloudfla
 
 - 2 domains per CF account, provisioned via Cloudflare Partner
 - Named tunnels: `mesh-tun-1` → `tun.<gh_user>.qzz.io`, `mesh-tun-2` → `tun.<gh_user>.dpdns.org`
-- Credentials stored as `CLOUDFLARE_TUNNEL_CREDS` secret (base64-encoded JSON) on each fork
+- Credentials stored as `CLOUDFLARE_TUNNEL_CREDS` secret (base64-encoded JSON) on each repo
 - `proxy.yml` switches from trycloudflare random subdomain to named tunnel when creds are present
+- CF tokens stored locally in `~/.animamesh/accounts/<name>/cf_token` for programmatic tunnel/DNS management
 - Single coordinator Worker (deployed under `vi70x3` account) remains unchanged — Cloudflare accounts are only for tunnel DNS, not for the coordinator
 
 ### Authentication Matrix
 
 | Secret | Scope | Where stored | Rotated |
 |---|---|---|---|
-| GitHub PAT | Per-account | `~/.animamesh/accounts/<name>/token` + `gh` config | Per-session |
-| COORDINATOR_URL | Fleet-wide | GH Actions secret on every repo | Rarely |
-| AUTH_TOKEN | Fleet-wide | GH Actions secret on every repo | If leaked |
-| N2N_COMMUNITY | Fleet-wide | GH Actions secret on every repo | Per-deployment |
-| N2N_KEY | Fleet-wide | GH Actions secret on every repo | Per-deployment |
+| GitHub PAT | Per-account | `~/.animamesh/accounts/<name>/token` (chmod 600) + `gh/hosts.yml` | Per-session |
+| CF API Token | Per-account | `~/.animamesh/accounts/<name>/cf_token` (chmod 600) | If leaked |
+| CF Account ID | Per-account | `~/.animamesh/accounts/<name>/cf_account_id` | Rarely |
+| COORDINATOR_URL | Fleet-wide | `~/.animamesh/fleet.env` + GH Actions secret on every repo | Rarely |
+| AUTH_TOKEN | Fleet-wide | `~/.animamesh/fleet.env` + GH Actions secret on every repo | If leaked |
+| N2N_COMMUNITY | Fleet-wide | `~/.animamesh/fleet.env` + GH Actions secret on every repo | Per-deployment |
+| N2N_KEY | Fleet-wide | `~/.animamesh/fleet.env` + GH Actions secret on every repo | Per-deployment |
 | CLOUDFLARE_API_TOKEN | Per-account | GH Actions secret on repo | If leaked |
 | CLOUDFLARE_TUNNEL_CREDS | Per-account | GH Actions secret on repo | If leaked |
 | VLESS_UUID / HY2_PASSWORD | Per-run | Generated in workflow, posted to coordinator | Every run |
@@ -263,13 +285,16 @@ Each GitHub account (`vi70x5`–`vi70x20`) can optionally have a paired Cloudfla
 - **Account suspension ≠ fleet loss** — If `vi70x5` is suspended, the other 15 accounts keep running. Only the coordinator stays up (deployed under `vi70x3`, a separate account).
 - **Rate limit distribution** — GitHub API has 5000 req/hr per account. Spreading across 16 accounts gives ~80k req/hr aggregate for workflow dispatches and secret management.
 - **No cross-account contamination** — Each repo has its own secrets. There is no shared KV or cross-account token that could compromise the fleet if a single account is breached.
-- **`GH_CONFIG_DIR` caveat** — The `gh` CLI stores auth per-account in `~/.animamesh/accounts/<name>/gh/`. However, `git push` via `GH_CONFIG_DIR` silently fails on some repos. The fleet script works around this by embedding the token directly in the remote URL: `https://oauth2:${gh_token}@github.com/<user>/<repo>.git`.
+- **`GH_CONFIG_DIR` caveat** — The `gh` CLI stores auth per-account in `~/.animamesh/accounts/<name>/gh/`. However, `git push` via `GH_CONFIG_DIR` silently fails on some repos. The fleet script works around this by using `git config http.extraHeader` for stateless auth (safer than embedding tokens in remote URLs).
 
 ## Credential Rules
 
-- `COORDINATOR_URL`, `AUTH_TOKEN`, `NETWORK_ID` → GitHub Actions secrets only, never in source
+- `COORDINATOR_URL`, `AUTH_TOKEN`, `NETWORK_ID` → stored in `~/.animamesh/fleet.env` locally, GitHub Actions secrets on repos, never in source
 - Worker `AUTH_TOKEN` set via `wrangler secret put AUTH_TOKEN` — if absent, worker allows all requests (dev mode)
 - `wrangler.toml` KV namespace id is a placeholder — replace after `wrangler kv:namespace create BPB_KV`, don't commit real ids
+- All token files under `~/.animamesh/accounts/` are `chmod 600` — set automatically by fleet script
+- `~/.animamesh/.gitignore` excludes `*token*`, `*secret*`, `fleet.env`, `hosts.yml` — prevents accidental credential leaks
+- CF tokens (`cf_token`, `cf_account_id`) are optional — only needed for permanent tunnel domains or Worker deployment
 
 ## Further Reference
 
