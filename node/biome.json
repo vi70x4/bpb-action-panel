@@ -19,6 +19,20 @@
 			"correctness": {
 				"noUnusedFunctionParameters": "warn",
 				"noUnusedVariables": "error"
+			},
+			"complexity": {
+				"noExcessiveCognitiveComplexity": {
+					"level": "warn",
+					"options": { "maxAllowedComplexity": 20 }
+				},
+				"noExcessiveLinesPerFunction": {
+					"level": "warn",
+					"options": { "maxLines": 100 }
+				},
+				"useMaxParams": {
+					"level": "warn",
+					"options": { "max": 3 }
+				}
 			}
 		}
 	},

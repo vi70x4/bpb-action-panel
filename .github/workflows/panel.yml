@@ -40,6 +40,9 @@ jobs:
       - name: Lint code
         run: npm run lint || true
 
+      - name: Dead code detection
+        run: npm run dead-code || true
+
       - name: Run tests
         run: npm test || true
 

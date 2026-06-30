@@ -1,0 +1,21 @@
+{
+	"$schema": "https://unpkg.com/knip@5/schema.json",
+	"entry": [
+		"node/src/index.ts",
+		"node/src/indexer.ts",
+		"worker/src/index.ts",
+		"tools/sim/dht-cluster-sim.ts",
+		"tools/monitor/ghost-detector.ts",
+		"tools/bootstrap/validate-bootstrap.ts",
+		"tools/debug/keyspace-inspector.ts",
+		"tools/mock/tunnel-emitter.ts",
+		"tools/spec/validate-spec.ts",
+		"tools/ci/ci-pipeline.ts"
+	],
+	"project": [
+		"src/**/*.ts",
+		"node/src/**/*.ts",
+		"worker/src/**/*.ts",
+		"tools/**/*.ts"
+	]
+}
