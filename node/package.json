@@ -24,7 +24,7 @@
     "@multiformats/multiaddr": "^13.0.0",
     "multiformats": "^13.0.0",
     "@libp2p/tcp": "^9.0.0",
-    "it-length-prefixed": "^9.0.0",
+    "it-length-prefixed": "^11.0.1",
     "it-pipe": "^3.0.0",
     "it-stream-types": "^2.0.0",
     "p-defer": "^4.0.0",
