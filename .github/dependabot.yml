@@ -1,0 +1,29 @@
+version: 2
+updates:
+  # Root dashboard (src/)
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    versioning-strategy: increase
+
+  # node/ libp2p DHT mesh node
+  - package-ecosystem: "npm"
+    directory: "/node"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  # worker/ Cloudflare coordinator
+  - package-ecosystem: "npm"
+    directory: "/worker"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"

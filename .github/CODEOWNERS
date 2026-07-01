@@ -1,0 +1,7 @@
+# Fleet-wide default owner
+* @animamesh/fleet
+
+# Sensitive workflow scripts need explicit maintainer approval
+.github/workflows/proxy.yml @vi70x4
+.github/workflows/alerts.yml @vi70x4
+scripts/proxy-up.sh @vi70x4
